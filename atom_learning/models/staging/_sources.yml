@@ -1,0 +1,10 @@
+version: 2
+sources:
+  - name: de_raw
+    database: atom-analytics-candidates
+    schema: de_raw
+    tables:
+      - name: responses
+      - name: assessment_sittings
+      - name: pupils
+      - name: course_hierarchy

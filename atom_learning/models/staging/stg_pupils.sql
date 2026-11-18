@@ -1,0 +1,1 @@
+select * from {{ source('de_raw', 'pupils') }}
