@@ -1,10 +1,15 @@
 version: 2
+
 sources:
   - name: de_raw
     database: atom-analytics-candidates
     schema: de_raw
     tables:
       - name: responses
+        description: One row per question a pupil answered.
       - name: assessment_sittings
+        description: One row per assessment a pupil sat.
       - name: pupils
+        description: One row per pupil.
       - name: course_hierarchy
+        description: One row per question, placing it in subject > topic > subtopic > atom.

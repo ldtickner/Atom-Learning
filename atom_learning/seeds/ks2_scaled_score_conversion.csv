@@ -1,0 +1,163 @@
+test_year,ks2_test,subject_name,raw_score,max_raw_score,scaled_score
+2026,English reading,English,0,50,
+2026,English reading,English,1,50,
+2026,English reading,English,2,50,
+2026,English reading,English,3,50,81
+2026,English reading,English,4,50,82
+2026,English reading,English,5,50,84
+2026,English reading,English,6,50,85
+2026,English reading,English,7,50,86
+2026,English reading,English,8,50,87
+2026,English reading,English,9,50,88
+2026,English reading,English,10,50,89
+2026,English reading,English,11,50,90
+2026,English reading,English,12,50,91
+2026,English reading,English,13,50,92
+2026,English reading,English,14,50,93
+2026,English reading,English,15,50,93
+2026,English reading,English,16,50,94
+2026,English reading,English,17,50,95
+2026,English reading,English,18,50,95
+2026,English reading,English,19,50,96
+2026,English reading,English,20,50,97
+2026,English reading,English,21,50,98
+2026,English reading,English,22,50,98
+2026,English reading,English,23,50,99
+2026,English reading,English,24,50,99
+2026,English reading,English,25,50,100
+2026,English reading,English,26,50,101
+2026,English reading,English,27,50,101
+2026,English reading,English,28,50,102
+2026,English reading,English,29,50,103
+2026,English reading,English,30,50,103
+2026,English reading,English,31,50,104
+2026,English reading,English,32,50,105
+2026,English reading,English,33,50,106
+2026,English reading,English,34,50,106
+2026,English reading,English,35,50,107
+2026,English reading,English,36,50,108
+2026,English reading,English,37,50,109
+2026,English reading,English,38,50,109
+2026,English reading,English,39,50,110
+2026,English reading,English,40,50,111
+2026,English reading,English,41,50,112
+2026,English reading,English,42,50,113
+2026,English reading,English,43,50,114
+2026,English reading,English,44,50,116
+2026,English reading,English,45,50,117
+2026,English reading,English,46,50,118
+2026,English reading,English,47,50,120
+2026,English reading,English,48,50,120
+2026,English reading,English,49,50,120
+2026,English reading,English,50,50,120
+2026,Mathematics,Maths,0,110,
+2026,Mathematics,Maths,1,110,
+2026,Mathematics,Maths,2,110,
+2026,Mathematics,Maths,3,110,80
+2026,Mathematics,Maths,4,110,80
+2026,Mathematics,Maths,5,110,80
+2026,Mathematics,Maths,6,110,80
+2026,Mathematics,Maths,7,110,81
+2026,Mathematics,Maths,8,110,82
+2026,Mathematics,Maths,9,110,83
+2026,Mathematics,Maths,10,110,83
+2026,Mathematics,Maths,11,110,84
+2026,Mathematics,Maths,12,110,85
+2026,Mathematics,Maths,13,110,85
+2026,Mathematics,Maths,14,110,86
+2026,Mathematics,Maths,15,110,86
+2026,Mathematics,Maths,16,110,87
+2026,Mathematics,Maths,17,110,87
+2026,Mathematics,Maths,18,110,88
+2026,Mathematics,Maths,19,110,88
+2026,Mathematics,Maths,20,110,89
+2026,Mathematics,Maths,21,110,89
+2026,Mathematics,Maths,22,110,90
+2026,Mathematics,Maths,23,110,90
+2026,Mathematics,Maths,24,110,90
+2026,Mathematics,Maths,25,110,91
+2026,Mathematics,Maths,26,110,91
+2026,Mathematics,Maths,27,110,92
+2026,Mathematics,Maths,28,110,92
+2026,Mathematics,Maths,29,110,92
+2026,Mathematics,Maths,30,110,93
+2026,Mathematics,Maths,31,110,93
+2026,Mathematics,Maths,32,110,93
+2026,Mathematics,Maths,33,110,94
+2026,Mathematics,Maths,34,110,94
+2026,Mathematics,Maths,35,110,94
+2026,Mathematics,Maths,36,110,94
+2026,Mathematics,Maths,37,110,95
+2026,Mathematics,Maths,38,110,95
+2026,Mathematics,Maths,39,110,95
+2026,Mathematics,Maths,40,110,96
+2026,Mathematics,Maths,41,110,96
+2026,Mathematics,Maths,42,110,96
+2026,Mathematics,Maths,43,110,96
+2026,Mathematics,Maths,44,110,97
+2026,Mathematics,Maths,45,110,97
+2026,Mathematics,Maths,46,110,97
+2026,Mathematics,Maths,47,110,97
+2026,Mathematics,Maths,48,110,98
+2026,Mathematics,Maths,49,110,98
+2026,Mathematics,Maths,50,110,98
+2026,Mathematics,Maths,51,110,98
+2026,Mathematics,Maths,52,110,99
+2026,Mathematics,Maths,53,110,99
+2026,Mathematics,Maths,54,110,99
+2026,Mathematics,Maths,55,110,99
+2026,Mathematics,Maths,56,110,100
+2026,Mathematics,Maths,57,110,100
+2026,Mathematics,Maths,58,110,100
+2026,Mathematics,Maths,59,110,100
+2026,Mathematics,Maths,60,110,101
+2026,Mathematics,Maths,61,110,101
+2026,Mathematics,Maths,62,110,101
+2026,Mathematics,Maths,63,110,101
+2026,Mathematics,Maths,64,110,101
+2026,Mathematics,Maths,65,110,102
+2026,Mathematics,Maths,66,110,102
+2026,Mathematics,Maths,67,110,102
+2026,Mathematics,Maths,68,110,102
+2026,Mathematics,Maths,69,110,103
+2026,Mathematics,Maths,70,110,103
+2026,Mathematics,Maths,71,110,103
+2026,Mathematics,Maths,72,110,103
+2026,Mathematics,Maths,73,110,104
+2026,Mathematics,Maths,74,110,104
+2026,Mathematics,Maths,75,110,104
+2026,Mathematics,Maths,76,110,104
+2026,Mathematics,Maths,77,110,105
+2026,Mathematics,Maths,78,110,105
+2026,Mathematics,Maths,79,110,105
+2026,Mathematics,Maths,80,110,106
+2026,Mathematics,Maths,81,110,106
+2026,Mathematics,Maths,82,110,106
+2026,Mathematics,Maths,83,110,106
+2026,Mathematics,Maths,84,110,107
+2026,Mathematics,Maths,85,110,107
+2026,Mathematics,Maths,86,110,107
+2026,Mathematics,Maths,87,110,108
+2026,Mathematics,Maths,88,110,108
+2026,Mathematics,Maths,89,110,108
+2026,Mathematics,Maths,90,110,108
+2026,Mathematics,Maths,91,110,109
+2026,Mathematics,Maths,92,110,109
+2026,Mathematics,Maths,93,110,109
+2026,Mathematics,Maths,94,110,110
+2026,Mathematics,Maths,95,110,110
+2026,Mathematics,Maths,96,110,111
+2026,Mathematics,Maths,97,110,111
+2026,Mathematics,Maths,98,110,112
+2026,Mathematics,Maths,99,110,112
+2026,Mathematics,Maths,100,110,113
+2026,Mathematics,Maths,101,110,113
+2026,Mathematics,Maths,102,110,114
+2026,Mathematics,Maths,103,110,114
+2026,Mathematics,Maths,104,110,115
+2026,Mathematics,Maths,105,110,116
+2026,Mathematics,Maths,106,110,117
+2026,Mathematics,Maths,107,110,118
+2026,Mathematics,Maths,108,110,119
+2026,Mathematics,Maths,109,110,120
+2026,Mathematics,Maths,110,110,120
