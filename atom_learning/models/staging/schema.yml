@@ -58,6 +58,12 @@ models:
           - not_null:
               config:
                 where: "is_complete"
+      - name: finished_date
+        description: Date the sitting finished in UK time (Europe/London). A sitting counts towards a score from this date.
+        data_tests:
+          - not_null:
+              config:
+                where: "is_complete"
 
   - name: stg_course_hierarchy
     description: >
@@ -84,6 +90,10 @@ models:
         data_tests: [not_null]
 
   - name: stg_responses
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not (is_no_attempt and is_correct)"
     description: >
       One row per answer to a question, cleaned from de_raw.responses. No rows are filtered or deduplicated;
       duplicate answers and answers with no matching sitting are handled in the intermediate layer.

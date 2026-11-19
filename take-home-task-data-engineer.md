@@ -3,7 +3,7 @@
 <!-- Start of picture text -->
 winge@<br><!-- End of picture text -->
 
-# Data Engineer — Take-Home Task 
+# Data Engineer - Take-Home Task 
 
 Atom Learning builds learning and assessment products for both families at home and teachers in schools. 
 
