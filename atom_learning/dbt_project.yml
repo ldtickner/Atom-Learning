@@ -13,8 +13,16 @@ clean-targets:
   - "target"
   - "dbt_packages"
 
+vars:
+  # Days of recent partitions each incremental run rebuilds, to catch late-arriving rows
+  lookback_days: 3
+  # Longest a scored sitting may stay open; responses are read this far further back (max seen: 19)
+  max_sitting_days: 31
+
 models:
   atom_learning:
+    # Stop on a column change rather than leave old partitions null; fix with a deliberate --full-refresh
+    +on_schema_change: fail
     staging:
       +materialized: view
     intermediate:

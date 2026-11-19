@@ -1,0 +1,88 @@
+version: 2
+
+models:
+  - name: int_sitting_answers
+    description: >
+      One answer per question per sitting, for answers that count towards a score: complete, non-deleted,
+      summative_assessment sittings in fixed_question or non_adaptive style, Year 1-6, non-deleted pupils,
+      scored subjects only. Duplicate copies collapse to one, correct if any copy is correct.
+      Partitioned by the sitting's UK finish date so a whole sitting is always rebuilt together.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [session_id, question_id]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not (is_no_attempt and is_correct)"
+    columns:
+      - name: sitting_date
+        description: UK date the sitting finished. Partition column; a sitting counts towards a score from this date.
+        data_tests: [not_null]
+      - name: session_id
+        description: Sitting the answer belongs to.
+        data_tests: [not_null]
+      - name: pupil_id
+        description: Pupil who sat the assessment, taken from the sitting.
+        data_tests: [not_null]
+      - name: subject_name
+        description: Subject of the question. Only subjects in ks2_scaled_score_conversion.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [English, Maths]
+      - name: year_group
+        description: Pupil's year group at the sitting.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 6
+      - name: question_id
+        description: Question answered.
+        data_tests: [not_null]
+      - name: is_correct
+        description: True if any copy of the answer was correct. No attempt counts as incorrect.
+        data_tests: [not_null]
+      - name: is_no_attempt
+        description: True if every copy of the answer was a no attempt. Never also correct.
+        data_tests: [not_null]
+
+  - name: int_pupil_subject_daily_totals
+    description: >
+      Answer counts per pupil, subject, year group and sitting date, summed from int_sitting_answers.
+      The mart sums these over its evidence window; percentages are computed there, after summing.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [pupil_id, subject_name, sitting_date, year_group]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "n_correct + n_not_attempted <= n_questions"
+    columns:
+      - name: sitting_date
+        description: UK date the sittings finished. Partition column.
+        data_tests: [not_null]
+      - name: pupil_id
+        description: Pupil the counts belong to.
+        data_tests: [not_null]
+      - name: subject_name
+        description: Subject of the questions (English or Maths).
+        data_tests: [not_null]
+      - name: year_group
+        description: Pupil's year group at the sittings. Kept so the mart can reset the window when it changes.
+        data_tests: [not_null]
+      - name: n_questions
+        description: Questions answered or skipped, after duplicates are collapsed.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: n_correct
+        description: Questions answered correctly.
+        data_tests: [not_null]
+      - name: n_not_attempted
+        description: Questions skipped (is_no_attempt). Counted in n_questions as incorrect; n_questions - n_correct - n_not_attempted gives wrong answers.
+        data_tests: [not_null]

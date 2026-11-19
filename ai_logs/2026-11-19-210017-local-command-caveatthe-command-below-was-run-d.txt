@@ -1,0 +1,1887 @@
+
+> /clear
+
+> <ide_opened_file>The user opened the file
+  c:\Users\ldtic\Documents\Projects\Atom Learning\README.md in the IDE. This
+  may or may not be related to the current task.</ide_opened_file>
+
+> Read CLAUDE.md, README.md and docs/data_quality.md. The staging layer is
+  finished and committed. We are starting Step 4: the intermediate models.
+
+  Before writing any code, give me a plan that covers:
+  1. Which intermediate models we need, and what each one does, in one line
+  each.
+  2. Each rule from the README "Defaults applied" paragraph, and which model
+  applies it.
+  3. How the duplicate rule works incrementally, since it needs a whole
+  sitting. Sittings can cross midnight.
+  4. The partition column and cluster columns, with reasons.
+  5. The lookback window. My starting idea is 3 days, set as a dbt variable
+  called lookback_days. Tell me whether you agree and why.
+
+  Use UK dates everywhere, converted with date(answered_at, 'Europe/London'),
+  so every model uses the same day boundary.
+
+  Do not write code until I agree the plan.
+
+● I'll read the README, data quality notes, task doc and staging models first.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 1. Request: plan the intermediate models (no code yet).
+  2. This command only reads the README, the data quality doc, the project
+     layout and dbt_project.yml.
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● I've read everything I need. I haven't written any code. Here is the plan,
+  with the choices you need to make marked Decision.
+
+  ---
+
+  1. The intermediate models
+
+  Model: int_sitting_answers
+  What it does: Keeps only the answers that count, then collapses duplicates to
+  one answer per question per sitting
+  Grain: session_id + question_id
+  ────────────────────────────────────────
+  Model: int_pupil_subject_daily_totals
+  What it does: Counts answers and correct answers per pupil, subject, year
+  group
+  and day
+  Grain: pupil_id + subject_name + year_group + date
+
+  Why two models and not one: the first gives us a grain we can test (unique on
+  session_id + question_id), and other work can reuse it, such as topic-level
+  scores. The second is small. The mart then sums a few hundred thousand daily
+  rows, not 100M+ answers, every time it runs for an as_of_date.
+
+  Why not more: there's nothing for a third model to do. A separate "valid
+  sittings" model would just be a filter that only one model reads.
+
+  Decision A: two models, or fold the deduplication into the daily totals model
+  as a CTE? I'd keep two.
+
+  Small mismatch: CLAUDE.md says the intermediate layer holds "first answers".
+  But duplicate copies share the exact same answered_at, so no copy can be
+  called "first". The real rule is "correct if any copy is correct". I'd change
+  that wording in CLAUDE.md to "one answer per question per sitting", and I've
+  avoided first in the model name.
+
+  2. Where each "Defaults applied" rule lives
+
+  ┌────────────────────────────┬────────────────────────────────────────────┐
+  │            Rule            │                   Model                    │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ UK dates for answers       │ stg_responses (answered_date exists        │
+  │                            │ already)                                   │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ UK dates for as_of_date    │ mart                                       │
+  │ and the 1 September start  │                                            │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Complete, non-deleted      │ int_sitting_answers                        │
+  │ sittings only              │                                            │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Non-deleted pupils only    │ int_sitting_answers (the null handling is  │
+  │ (null counts as not        │ already in stg_pupils)                     │
+  │ deleted)                   │                                            │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Survey and adaptive        │ int_sitting_answers                        │
+  │ sittings excluded          │                                            │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Answers with no sitting    │ int_sitting_answers (an inner join to      │
+  │ row excluded               │ sittings drops them)                       │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Answers 1 s after          │ int_sitting_answers (we add no filter on   │
+  │ finished_at kept           │ finished_at, so nothing to write)          │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Only summative_assessment  │ int_sitting_answers                        │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Year groups 1 to 6 only    │                                            │
+  │ (from the data quality     │ int_sitting_answers                        │
+  │ table)                     │                                            │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │                            │ int_sitting_answers (join to the distinct  │
+  │ Scored subjects only       │ subject_name in the seed, which the seed's │
+  │                            │  schema calls the source of truth)         │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Duplicates collapse to     │ int_sitting_answers                        │
+  │ one, correct if any copy   │ (logical_or(is_correct))                   │
+  │ is correct                 │                                            │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │                            │ int_sitting_answers. Nothing to code:      │
+  │ is_no_attempt counts as    │ those rows are already is_correct = false  │
+  │ incorrect                  │ and stay in the count. I'd add a test to   │
+  │                            │ lock this in                               │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Clamp to 80 and flag       │ mart                                       │
+  │ below_scale                │                                            │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ n_questions and            │ mart, built from the daily totals          │
+  │ low_evidence (< 20)        │                                            │
+  └────────────────────────────┴────────────────────────────────────────────┘
+
+  Decision B: for style, keep the allowed values (fixed_question, non_adaptive)
+  or drop the banned ones (survey, adaptive)? Today both give the same rows. The
+  difference shows up when a new style arrives: an allow-list leaves it
+  unscored until someone checks it. I'd use the allow-list, and the README
+  wording would change to match.
+
+  3. The duplicate rule when running incrementally
+
+  The problem. An incremental run rebuilds only recent date partitions. If we
+  partition by answer date, one sitting can sit in two partitions: started
+  23:50, finished 00:20. Or a pupil leaves a sitting and comes back days later.
+  Rebuilding only the newer partition then goes wrong in two ways:
+  - Copies of a duplicate could fall on both sides of the boundary and get
+    counted twice. This doesn't happen today, because copies share a timestamp,
+    but nothing guarantees it.
+  - A sitting that started on an old day and completes now has early answers in
+    a partition we don't rebuild, so those answers never get counted.
+
+  My advice: partition by the sitting's finish date, not the answer date. Define
+  sitting_date = date(finished_at, 'Europe/London'). That's the same UK day
+  boundary you asked for, applied to the sitting.
+  - A whole sitting then lives in one partition, so duplicates are always
+    deduplicated together. The plan guarantees this; it doesn't depend on luck
+    in the data.
+  - A sitting only counts once it's complete. When it completes, its finish date
+    is recent, so the next run picks it up with no extra logic.
+  - It's more correct point-in-time. A sitting that finished after as_of_date
+    was incomplete on that date, so it shouldn't count. The mart filters on
+    sitting_date <= as_of_date. Using today's is_complete alone would let it in.
+    I'd keep the answered_date <= as_of_date filter too, for the 1-second-late
+    answer that crosses midnight.
+  - To read responses, the incremental run takes sittings with sitting_date
+    inside the window. It then reads responses from one day before the window
+    start, which catches the part of a sitting before midnight.
+
+  The other options, and why I wouldn't pick them:
+  - Keep partitioning by answer date and widen the rebuild to every partition a
+    touched sitting covers. This works, but the window changes each run and is
+    hard to explain.
+  - Use the merge strategy keyed on session_id + question_id. CLAUDE.md asks for
+    insert_overwrite, and a merge at 100M+ rows costs more.
+
+  Decision C: partition by sitting_date (finish date)? This changes the README
+  layout row ("partitioned by answer date"). It also needs finished_date added
+  to stg_assessment_sittings. That's a cast, so it's allowed in staging, and it
+  keeps one definition of the day boundary.
+
+  What I'm unsure of: reading responses from one day before the window assumes
+  no sitting runs past one midnight. I haven't checked how long sittings last.
+  Before we build, I'd run one read-only query for the longest sitting, then add
+  a data test that fails if any sitting spans more than one UK date.
+
+  4. Partition and cluster columns
+
+  Both models use the same settings:
+  - Partition: sitting_date, daily. The mart reads a date range (1 September to
+    as_of_date), so BigQuery skips every partition outside it. Daily also
+    matches the lookback, which is counted in days. Ten years is about 3,650
+    partitions, under BigQuery's limit of 4,000.
+  - Cluster: pupil_id, subject_name. These are the columns the mart groups and
+    joins on. This is your CLAUDE.md rule, and it suits these queries.
+
+  Decision D: keep the column name subject_name to match staging and the seed?
+  CLAUDE.md says "subject". The English → Reading mapping happens in the mart,
+  so I'd keep subject_name here.
+
+  5. Lookback window: I agree with 3 days
+
+  - With partitions by finish date, the lookback only has to cover late-arriving
+    rows: answers or sittings that land in raw after their date. It doesn't
+    also have to cover how long sittings last, which it would with answer-date
+    partitions.
+  - 3 days covers a pipeline outage over a weekend. Each run rewrites only 3 or
+    4 daily partitions, which is cheap.
+  - The window is counted back from the latest sitting_date already in the
+    target table, never from current_date(), so runs stay reproducible.
+  - What I'm unsure of: raw has no load timestamp, so we can't measure the real
+    delay. 3 is a judgement. In production you'd set it from the measured delay.
+  - The limit: a sitting deleted or corrected more than 3 days after it finished
+    won't be picked up. The fix is a scheduled --full-refresh, for example
+    weekly. I'd note that in the README, not build anything for it.
+
+  The intermediate models never read as_of_date. They hold everything, and only
+  the mart applies the point in time. This keeps a re-run for any past date
+  exact.
+
+  ---
+
+  New assumptions to add to the README if you agree:
+  1. A sitting counts as of its UK finish date.
+  2. No sitting spans more than one UK midnight (to be checked).
+  3. A lookback of 3 days is enough for late data.
+  4. Corrections older than the lookback need a full refresh.
+
+  Tell me your answers to A to D, and whether I can run the read-only query on
+  sitting length. Then I'll show you int_sitting_answers first.
+
+> A: keep 2, B:use the allowed list, C: yes Please run the read-only query for
+  the longest sitting first and show me the result., D:yes keep subject_name
+  here
+
+● I'll run one read-only query. It measures sitting length two ways: from
+  started_at to finished_at, and from each sitting's earliest answer to its
+  finish date (the responses window depends on the second one).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● One sitting ran for 47 days, and 145 sittings have answers dated before they
+  finished, so my assumption was wrong. I'm checking how those 145 are spread to
+  see how far back the responses data must go.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Result: I wrongly assumed no sitting runs past one midnight. Sittings can stay
+  open for weeks.
+
+  What the data shows (read-only, complete sittings only):
+
+  ┌──────────────────────────────────┬──────────────┬───────────────────┐
+  │ Days from first answer to finish │ All sittings │ Sittings we score │
+  ├──────────────────────────────────┼──────────────┼───────────────────┤
+  │ 1 day                            │ 23           │ 23                │
+  ├──────────────────────────────────┼──────────────┼───────────────────┤
+  │ 2–3 days                         │ 4            │ 3                 │
+  ├──────────────────────────────────┼──────────────┼───────────────────┤
+  │ 4–7 days                         │ 37           │ 2                 │
+  ├──────────────────────────────────┼──────────────┼───────────────────┤
+  │ 8–14 days                        │ 10           │ 10                │
+  ├──────────────────────────────────┼──────────────┼───────────────────┤
+  │ 15–31 days                       │ 8            │ 5                 │
+  ├──────────────────────────────────┼──────────────┼───────────────────┤
+  │ 32+ days                         │ 63           │ 0                 │
+  ├──────────────────────────────────┼──────────────┼───────────────────┤
+  │ Total                            │ 145 of 2,496 │ 43                │
+  └──────────────────────────────────┴──────────────┴───────────────────┘
+
+  - The longest sitting overall is 47 days (1,140 hours). Every sitting over 31
+    days is one we already exclude.
+  - The longest sitting we score is 19 days.
+
+  What this changes. Decision C, partitioning by finish date, is now more
+  important. With answer-date partitions, 43 scored sittings would be split
+  across partitions. The part that breaks is how far back each run reads
+  responses. "One day before the window" would miss the early answers of a
+  sitting that finishes up to 19 days after it starts. The run would rebuild
+  that sitting's partition with only some of its answers. That loss would be
+  silent.
+
+  Options for reading responses:
+
+  1. A second variable, max_sitting_days (my advice: 31). Each run reads
+     responses from window_start - max_sitting_days. 31 leaves room above the 19
+     we see. The cost is about 34 days of responses per run instead of 4, which
+     is still a small part of a 100M+ row table. A custom test in tests/ would
+     check staging for any scored sitting longer than the limit and fail the
+     build. Loss can't stay silent, because the limit is checked on every build.
+  2. No date filter on responses. Each run reads all responses and keeps only
+     the sessions in the window. It's always correct and simplest to read, but
+     it scans the whole table on every run, and that cost grows forever.
+  3. Set the limit exactly at 19. It's the cheapest to read, but the first
+     20-day sitting fails the build.
+
+  Decision E: option 1 with 31? Or another value, or another option?
+
+  New data quality finding, to add to docs/data_quality.md once you agree: 145
+  of 2,496 complete sittings have answers on an earlier UK date than they
+  finished, up to 47 days earlier. Of those, 43 are scored, at most 19 days.
+
+  Assumptions changed (please add these to the README):
+  - ~~No sitting spans more than one UK midnight~~ This is false.
+  - New: a scored sitting finishes within max_sitting_days of its first answer,
+    and a test enforces it.
+  - New, point in time: a sitting counts only from its finish date. A sitting
+    still open on as_of_date adds nothing, even if some answers came earlier.
+    That affects up to 43 sittings, depending on the date.
+
+  Once you've chosen E, I'll show you int_sitting_answers. It includes adding
+  finished_date to stg_assessment_sittings.
+
+> I agree with option 1
+
+● The plan is agreed. Before I write anything, here are the choices inside this
+  change:
+
+  - finished_date goes in stg_assessment_sittings. It uses the same date(...,
+    'Europe/London') pattern as answered_date, so the UK day boundary is defined
+    in one layer only.
+  - Two variables in dbt_project.yml: lookback_days: 3 and max_sitting_days: 31.
+  - Incremental window. I'm using dbt-bigquery's _dbt_max_partition, which is
+    the latest sitting_date already in the table. It gives us "latest date in
+    the data" with no current_date() and no extra query.
+    - Sittings are read from max - lookback_days.
+    - Responses are read from max - lookback_days - max_sitting_days.
+  - Deduplication is a group by session_id, question_id with
+    logical_or(is_correct).
+  - pupil_id comes from the sitting, not the response. The data quality doc
+    shows they always match.
+  - The test for max_sitting_days reads the sittings from int_sitting_answers.
+    That way it reuses the model's filters instead of copying them. It then
+    finds each sitting's earliest answer in stg_responses, which still holds the
+    early answers an incremental run skips.
+  - One staging test: is_no_attempt is never also is_correct, which locks in "no
+    attempt counts as incorrect".
+
+● Update(atom_learning\models\staging\stg_assessment_sittings.sql)
+  ⎿  Error: PreToolUse:Edit hook error: [Fact-Forcing Gate]
+
+     Before editing C:\Users\ldtic\Documents\Projects\Atom
+     Learning\atom_learning\models\staging\stg_assessment_sittings.sql, present
+     these facts:
+
+     1. List ALL files that import/require this file (use Grep)
+     2. List the public functions/classes affected by this change
+     3. If this file reads/writes data files, show field names, structure, and
+     date format (use redacted or synthetic values, not raw production data)
+     4. Quote the user's current instruction verbatim
+
+     Present the facts, then retry the same operation.
+     … +2 lines (ctrl+o to expand)
+
+● Update(atom_learning\models\staging\schema.yml)
+  ⎿  Error: PreToolUse:Edit hook error: [Fact-Forcing Gate]
+
+     Before editing C:\Users\ldtic\Documents\Projects\Atom
+     Learning\atom_learning\models\staging\schema.yml, present these facts:
+
+     1. List ALL files that import/require this file (use Grep)
+     2. List the public functions/classes affected by this change
+     3. If this file reads/writes data files, show field names, structure, and
+     date format (use redacted or synthetic values, not raw production data)
+     4. Quote the user's current instruction verbatim
+
+     Present the facts, then retry the same operation.
+     … +2 lines (ctrl+o to expand)
+
+● Update(atom_learning\models\staging\schema.yml)
+  ⎿  Added 4 lines
+      84          data_tests: [not_null]
+      85  
+      86    - name: stg_responses
+      87 +    data_tests:                                                
+      88 +      - dbt_utils.expression_is_true:                          
+      89 +          arguments:                                           
+      90 +            expression: "not (is_no_attempt and is_correct)"   
+      91      description: >
+      92        One row per answer to a question, cleaned from de_raw.res
+          ponses. No rows are filtered or deduplicated;
+      93        duplicate answers and answers with no matching sitting ar
+          e handled in the intermediate layer.
+
+● Update(atom_learning\dbt_project.yml)
+  ⎿  Error: PreToolUse:Edit hook error: [Fact-Forcing Gate]
+
+     Before editing C:\Users\ldtic\Documents\Projects\Atom
+     Learning\atom_learning\dbt_project.yml, present these facts:
+
+     1. List ALL files that import/require this file (use Grep)
+     2. List the public functions/classes affected by this change
+     3. If this file reads/writes data files, show field names, structure, and
+     date format (use redacted or synthetic values, not raw production data)
+     4. Quote the user's current instruction verbatim
+
+     Present the facts, then retry the same operation.
+     … +2 lines (ctrl+o to expand)
+
+● Write(atom_learning\models\intermediate\int_sitting_answers.sql)
+  ⎿  Error: PreToolUse:Write hook error: [Fact-Forcing Gate] (denial #4 this
+     session) First creation of C:\Users\ldtic\Documents\Projects\Atom
+     Learning\atom_learning\models\intermediate\int_sitting_answers.sql: briefly
+     state importers/callers, affected API, data schemas if any, and the user's
+     verbatim instruction, then retry. (ECC_GATEGUARD=off disables this gate.)
+
+● Write(atom_learning\models\intermediate\schema.yml)
+  ⎿  Error: PreToolUse:Write hook error: [Fact-Forcing Gate] (denial #5 this
+     session) First creation of C:\Users\ldtic\Documents\Projects\Atom
+     Learning\atom_learning\models\intermediate\schema.yml: briefly state
+     importers/callers, affected API, data schemas if any, and the user's
+     verbatim instruction, then retry. (ECC_GATEGUARD=off disables this gate.)
+
+● Write(atom_learning\tests\assert_scored_sittings_within_max_sitting_days.sql)
+  ⎿  Error: PreToolUse:Write hook error: [Fact-Forcing Gate] (denial #6 this
+     session) First creation of C:\Users\ldtic\Documents\Projects\Atom Learning\
+     atom_learning\tests\assert_scored_sittings_within_max_sitting_days.sql:
+     briefly state importers/callers, affected API, data schemas if any, and the
+     user's verbatim instruction, then retry. (ECC_GATEGUARD=off disables this
+     gate.)
+
+● Update(docs\data_quality.md)
+  ⎿  Error: PreToolUse:Edit hook error: [Fact-Forcing Gate] (denial #7 this
+     session) First edit of C:\Users\ldtic\Documents\Projects\Atom
+     Learning\docs\data_quality.md: briefly state importers/callers, affected
+     API, data schemas if any, and the user's verbatim instruction, then retry.
+     (ECC_GATEGUARD=off disables this gate.)
+● A hook blocked most writes until I stated facts: only the new
+  int_sitting_answers reads stg_assessment_sittings, so adding finished_date
+  breaks nothing. One edit went through, the is_no_attempt test in the staging
+  schema.yml, and I'm retrying the rest.
+
+● Update(atom_learning\models\staging\stg_assessment_sittings.sql)
+  ⎿  Added 3 lines, removed 1 line
+      14      coalesce(is_complete, false) as is_complete,
+      15      coalesce(is_deleted, false) as is_deleted,
+      16      started_at,
+      17 -    finished_at                                                
+      17 +    finished_at,                                               
+      18 +    -- UK date, same day boundary as stg_responses.answered_dat
+         +e; a sitting counts from this date                             
+      19 +    date(finished_at, 'Europe/London') as finished_date        
+      20  from source
+
+● Update(atom_learning\models\staging\schema.yml)
+  ⎿  Added 6 lines
+      58            - not_null:
+      59                config:
+      60                  where: "is_complete"
+      61 +      - name: finished_date                                    
+      62 +        description: Date the sitting finished in UK time (Euro
+         +pe/London). A sitting counts towards a score from this date.   
+      63 +        data_tests:                                            
+      64 +          - not_null:                                          
+      65 +              config:                                          
+      66 +                where: "is_complete"                           
+      67  
+      68    - name: stg_course_hierarchy
+      69      description: >
+
+● Update(atom_learning\dbt_project.yml)
+  ⎿  Added 6 lines
+      13    - "target"
+      14    - "dbt_packages"
+      15  
+      16 +vars:                                                          
+      17 +  # Days of recent partitions each incremental run rebuilds, to
+         + catch late-arriving rows                                      
+      18 +  lookback_days: 3                                             
+      19 +  # Longest a scored sitting may stay open; responses are read 
+         +this far further back (max seen: 19)                           
+      20 +  max_sitting_days: 31                                         
+      21 +                                                               
+      22  models:
+      23    atom_learning:
+      24      staging:
+
+● Write(atom_learning\models\intermediate\int_sitting_answers.sql)
+  ⎿  Wrote 81 lines to
+     atom_learning\models\intermediate\int_sitting_answers.sql
+       1 {{
+       2     config(
+       3         incremental_strategy='insert_overwrite',
+       4         partition_by={'field': 'sitting_date', 'data_type': 'dat
+         e', 'granularity': 'day'},
+       6     )
+       7 }}
+       8
+       9 with scored_subjects as (
+      10     select distinct subject_name
+     … +79 lines (ctrl+o to expand)
+
+● Write(atom_learning\models\intermediate\schema.yml)
+  ⎿  Wrote 44 lines to atom_learning\models\intermediate\schema.yml
+       1 version: 2
+       3 models:
+       4   - name: int_sitting_answers
+       5     description: >
+         t towards a score: complete, non-deleted,
+       7       summative_assessment sittings in fixed_question or non_ada
+       8       scored subjects only. Duplicate copies collapse to one, co
+         rrect if any copy is correct.
+       9       Partitioned by the sitting's UK finish date so a whole sit
+      10     data_tests:
+     … +42 lines (ctrl+o to expand)
+
+● Write(atom_learning\tests\assert_scored_sittings_within_max_sitting_days.sql)
+  ⎿  Wrote 21 lines to
+     atom_learning\tests\assert_scored_sittings_within_max_sitting_days.sql
+      1 -- Incremental runs only read responses max_sitting_days back. A
+        scored sitting open longer than that
+      2 -- would be rebuilt with some answers missing, so fail the build
+      3 -- ponytail: scans all of stg_responses each build; limit to rece
+        nt sitting_dates if test cost bites
+      4 with scored_sittings as (
+      5     select distinct
+      7         sitting_date
+      8     from {{ ref('int_sitting_answers') }}
+      9 )
+     … +15 lines (ctrl+o to expand)
+
+● Update(docs\data_quality.md)
+  ⎿  Added 1 line
+      30  | 7 | Session types: `summative_assessment` 2,469, `entrance_ex
+          am` 26, `mock_session` 14 | — | Only `summative_assessment` cou
+          nts (assumption; to confirm with product) |
+      31  | 8 | Subjects (questions per subject): English 4,699, Maths 3,
+          593, Non-Verbal Reasoning 844, Verbal Reasoning 807, Science 33
+          5, Screeners 181, Wellbeing 93 | — | Only Maths and English (→ 
+          Reading) are scored |
+      32  | 9 | Pupils with no answers at all | 78 of 242 | Still get a r
+          ow per subject, `score_status = no_answers` |
+      33 +| 11 | Complete sittings with answers on an earlier UK date tha
+         +n they finished | 145 of 2,496 sittings, up to 47 days; 43 are 
+         +scored, at most 19 days | Partition by sitting finish date; inc
+         +remental runs read responses `max_sitting_days` (31) further ba
+         +ck; a test fails if a scored sitting exceeds it |              
+      34  | 10 | Answers span 2025-11-10 → 2026-09-16; 2026/27 has 1,747 
+          answers from 26 pupils (10–16 Sep) | — | Academic-year window; 
+          default `as_of_date` gives a thin score (README decision 3) |
+      35  
+      36  ## Checked and clean
+
+● I put row 11 in the data quality table above row 10. I'll move it, then run
+  dbt parse. Parse only checks the project locally and sends nothing to
+  BigQuery.
+
+● Bash(cd "/c/Users/ldtic/Documents/Projects/Atom Learning" && python - <<'EOF'
+      p = "docs/data_quality.md"…)
+  ⎿  Updated docs\data_quality.md (+43 -43)
+       1 -# Data quality                                                 
+       2 -                                                               
+       3 -Profiled on 2026-11-18 against `atom-analytics-candidates.de_ra
+         -w` (europe-west2). Read-only queries.                          
+       4 -                                                               
+       5 -## Table sizes and keys                                        
+       6 -                                                               
+       7 -| Table | Rows | Key | Distinct keys | Null keys | Deleted |   
+       8 -|---|---|---|---|---|---|                                      
+       9 -| pupils | 242 | `pupil_id` | 242 | 0 | 0 |                    
+      10 -| assessment_sittings | 2,509 | `session_id` | 2,509 | 0 | 0 | 
+      11 -| course_hierarchy | 10,552 | `question_id` | 10,552 | 0 | — | 
+      12 -| responses | 63,707 | `response_id` | 63,707 | 0 | — |        
+      13 -                                                               
+      14 -Every column is nullable in the schema, but no key is null. No 
+         -pupils or sittings are deleted today; the `is_deleted` filters 
+         -stay for production data.                                      
+      15 -                                                               
+      16 -`pupils` holds only `pupil_id` and `is_deleted`. Year group com
+         -es from `assessment_sittings.year_group_at_sitting`; 6 pupils h
+         -ave more than one.                                             
+      17 -                                                               
+      18 -## Issues and decisions                                        
+      19 -                                                               
+      20 -| # | Issue | Rows | Decision |                                
+      21 -|---|---|---|---|                                              
+      22 -| 1 | Same question answered 2–5 times in one sitting, all copi
+         -es with the same `answered_at` and `question_number` | 2,082 gr
+         -oups (2,411 extra rows) | Collapse to one answer per `session_i
+         -d` + `question_id`, correct if any copy is correct |           
+      23 -| 1a | ...of which copies disagree on `is_correct` | 965 groups
+         - | As above. Root cause to investigate (see README, "What I'd d
+         -o next") |                                                     
+      24 -| 2 | `responses.session_id` not in `assessment_sittings` | 1,4
+         -33 answers, 56 sessions, Nov 2025 – Jun 2026 | Excluded: comple
+         -teness, style, type and year group cannot be checked |         
+      25 -| 3 | Answer logged after the sitting's `finished_at` | 1,608 a
+         -nswers, 236 sittings, all exactly 1 s late | Kept: timestamp ro
+         -unding |                                                       
+      26 -| 4 | Incomplete sittings (`is_complete = false`); 13 sittings 
+         -also have null `finished_at` | 13 | Excluded |                 
+      27 -| 4a | Sittings with null `started_at` | 12, all incomplete (11
+         - `entrance_exam` with no answers, 1 `summative_assessment` with
+         - 25 answers) | Already excluded as incomplete. Test requires st
+         -art and finish times only on complete sittings |               
+      28 -| 5 | Year groups 11, 14, 15 in primary data | 25 sittings | Ex
+         -cluded |                                                       
+      29 -| 6 | Sitting styles: `fixed_question` 2,370, `survey` 125, `no
+         -n_adaptive` 8, `adaptive` 6 | — | `survey` and `adaptive` exclu
+         -ded |                                                          
+      30 -| 7 | Session types: `summative_assessment` 2,469, `entrance_ex
+         -am` 26, `mock_session` 14 | — | Only `summative_assessment` cou
+         -nts (assumption; to confirm with product) |                    
+      31 -| 8 | Subjects (questions per subject): English 4,699, Maths 3,
+         -593, Non-Verbal Reasoning 844, Verbal Reasoning 807, Science 33
+         -5, Screeners 181, Wellbeing 93 | — | Only Maths and English (→ 
+         -Reading) are scored |                                          
+      32 -| 9 | Pupils with no answers at all | 78 of 242 | Still get a r
+         -ow per subject, `score_status = no_answers` |                  
+      33 -| 11 | Complete sittings with answers on an earlier UK date tha
+         -n they finished | 145 of 2,496 sittings, up to 47 days; 43 are 
+         -scored, at most 19 days | Partition by sitting finish date; inc
+         -remental runs read responses `max_sitting_days` (31) further ba
+         -ck; a test fails if a scored sitting exceeds it |              
+      34 -| 10 | Answers span 2025-11-10 → 2026-09-16; 2026/27 has 1,747 
+         -answers from 26 pupils (10–16 Sep) | — | Academic-year window; 
+         -default `as_of_date` gives a thin score (README decision 3) |  
+      35 -                                                               
+      36 -## Checked and clean                                           
+      37 -                                                               
+      38 -- No null `answered_at` or `is_correct`.                       
+      39 -- `is_no_attempt` (3,279 rows) is never also `is_correct`.     
+      40 -- Every response's `pupil_id` and `question_id` exist in their 
+         -tables.                                                        
+     … 46 more lines (ctrl+o to expand)
+
+● int_sitting_answers is written, and dbt parse passes. The only warning is
+  about marts, which is empty until we build the mart. Nothing has been run
+  against BigQuery yet.
+
+  What changed:
+
+  File: stg_assessment_sittings.sql
+  (atom_learning/models/staging/stg_assessment_sittings.sql)
+  Change: Adds finished_date = date(finished_at, 'Europe/London')
+  ────────────────────────────────────────
+  File: staging/schema.yml (atom_learning/models/staging/schema.yml)
+  Change: Describes and tests finished_date; adds a test that is_no_attempt is
+  never also is_correct
+  ────────────────────────────────────────
+  File: dbt_project.yml (atom_learning/dbt_project.yml)
+  Change: Adds the variables lookback_days: 3 and max_sitting_days: 31
+  ────────────────────────────────────────
+  File: int_sitting_answers.sql
+  (atom_learning/models/intermediate/int_sitting_answers.sql)
+  Change: The new model
+  ────────────────────────────────────────
+  File: intermediate/schema.yml (atom_learning/models/intermediate/schema.yml)
+  Change: Tests: session_id + question_id is unique, year group is 1 to 6,
+  subject is English or Maths, no nulls
+  ────────────────────────────────────────
+  File: assert_scored_sittings_within_max_sitting_days.sql
+  (atom_learning/tests/assert_scored_sittings_within_max_sitting_days.sql)
+  Change: Fails the build if a scored sitting stays open longer than
+  max_sitting_days
+  ────────────────────────────────────────
+  File: data_quality.md (docs/data_quality.md)
+  Change: New row 11: the multi-day sittings
+
+  How the model works:
+  1. Each filter on the sittings applies one "Defaults applied" rule. Each inner
+     join drops one kind of bad row: answers with no sitting, deleted pupils,
+     subjects we don't score.
+  2. group by session_id, question_id with logical_or(is_correct) is the
+     duplicate rule.
+  3. On an incremental run, _dbt_max_partition is the latest sitting_date
+     already in the table. Sittings are read from 3 days back and responses from
+     34 days back.
+
+  Two things I left out deliberately:
+  - answered_at and answered_date. Once a sitting counts from its finish date,
+    nothing downstream needs them. The plan said the mart would also filter on
+    answered_date <= as_of_date. That filter would only catch an answer logged 1
+    second after a sitting that finished at 23:59:59. I'd drop it rather than
+    carry a date column for that case. Say if you want it back.
+  - A count of duplicate copies. The data quality doc already records it.
+
+  Assumptions to add to the README (I haven't changed it):
+  - A sitting counts from its UK finish date. A sitting still open on as_of_date
+    adds nothing.
+  - A scored sitting finishes within 31 days of its first answer, and a test
+    enforces it.
+  - lookback_days = 3 is a judgement, because raw has no load timestamp to
+    measure late data.
+  - Corrections older than the lookback need a --full-refresh.
+  - The style rule is now an allow-list (fixed_question, non_adaptive). README
+    and row 6 of the data quality doc still say "survey and adaptive excluded".
+    The effect is the same today, but the wording should match.
+  - The Layout table says intermediate is "partitioned by answer date". It is
+    now partitioned by sitting finish date.
+
+  Next step: may I run dbt build --select stg_assessment_sittings stg_responses
+  int_sitting_answers? It writes the views and the new table to liam_tickner,
+  and runs the tests. I'd expect about 30,000 rows, and I'll check that a full
+  rebuild and an incremental rebuild give the same row count.
+
+> Build complete
+
+● I'll check the build results from dbt's local run log. Then I'll run read-only
+  queries to check the counts against the data quality numbers.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 37 nodes passed, and int_sitting_answers came out at 44,366 rows, well
+  above my rough guess of 30,000. I'm tracing the drop from 63,707 raw answers
+  one rule at a time to check each step.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Every step reconciles. The model's 44,366 matches the independent count from
+  raw exactly.
+
+  ┌──────────────────────┬─────────┬─────────┬──────────────────────────────┐
+  │         Step         │ Answers │ Dropped │            Check             │
+  ├──────────────────────┼─────────┼─────────┼──────────────────────────────┤
+  │ Raw answers          │ 63,707  │ —       │                              │
+  ├──────────────────────┼─────────┼─────────┼──────────────────────────────┤
+  │ Has a sitting        │ 62,274  │ 1,433   │ Matches data quality row 2 ✓ │
+  ├──────────────────────┼─────────┼─────────┼──────────────────────────────┤
+  │ Complete, not        │         │         │ Fits row 4a: 25 answers on   │
+  │ deleted              │ 62,243  │ 31      │ one incomplete sitting, plus │
+  │                      │         │         │  a few more                  │
+  ├──────────────────────┼─────────┼─────────┼──────────────────────────────┤
+  │ summative_assessment │ 62,243  │ 0       │ See below                    │
+  ├──────────────────────┼─────────┼─────────┼──────────────────────────────┤
+  │ Allowed style        │ 58,307  │ 3,936   │ Survey and adaptive answers  │
+  ├──────────────────────┼─────────┼─────────┼──────────────────────────────┤
+  │ Year 1–6             │ 58,307  │ 0       │ See below                    │
+  ├──────────────────────┼─────────┼─────────┼──────────────────────────────┤
+  │ Pupil not deleted    │ 58,307  │ 0       │ No deleted pupils, as        │
+  │                      │         │         │ expected ✓                   │
+  ├──────────────────────┼─────────┼─────────┼──────────────────────────────┤
+  │ English or Maths     │ 46,524  │ 11,783  │ The other 5 subjects         │
+  ├──────────────────────┼─────────┼─────────┼──────────────────────────────┤
+  │                      │         │         │ Of the 2,411 extra copies,   │
+  │ Deduplicated         │ 44,366  │ 2,158   │ the other 253 were already   │
+  │                      │         │         │ dropped by earlier filters ✓ │
+  └──────────────────────┴─────────┴─────────┴──────────────────────────────┘
+
+  New finding: two rules drop no answers today.
+  - summative_assessment: the entrance_exam and mock_session sittings that have
+    answers are all removed by earlier filters (incomplete, or survey or
+    adaptive style).
+  - Year 1–6: the 25 sittings in year groups 11, 14 and 15 are removed the same
+    way.
+
+  The rules stay in, because they protect production data. But the README and
+  data quality doc imply each one removes rows. I'd add one line to the data
+  quality doc saying they remove nothing today. Do you want that?
+
+  Still to check: whether an incremental run gives the same table as a full
+  rebuild. That needs two writes to liam_tickner:
+  1. dbt build --select int_sitting_answers. The table exists now, so this run
+     is incremental. It rebuilds the partitions from the last 3 days, using
+     answers from up to 34 days back.
+  2. Then a read-only check that the table still has 44,366 rows, with the same
+     correct count per sitting_date.
+
+  May I run that? Or you can run step 1 and I'll do the check. After that, the
+  next model is int_pupil_subject_daily_totals.
+
+> Table build and it still has 44366 rows
+
+● Matching row counts are a good sign. I'll also check that the run was really
+  incremental and not a full rebuild, because only an incremental run tests the
+  window logic.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Confirmed. The run was incremental: dbt reported SCRIPT, which is the
+  insert_overwrite path, not CREATE TABLE, and it scanned only 6.5 MiB. It
+  rebuilt the latest partitions and the total stayed at 44,366.
+  int_sitting_answers is done.
+
+  Next: int_pupil_subject_daily_totals
+
+  Here are the choices before I write any code:
+
+  - Grain: pupil_id + subject_name + year_group + sitting_date.
+  - Two counts:
+    - n_questions = count(*), the number of answers after deduplication.
+    - n_correct = countif(is_correct).
+    - No percentage is stored here. The mart computes it after summing, because
+      averaging daily percentages would weight a 5-question day the same as a
+      50-question day.
+  - Partition and cluster: the same as int_sitting_answers (sitting_date;
+    pupil_id, subject_name).
+  - Incremental window: sitting_date >= _dbt_max_partition - lookback_days. This
+    model doesn't need max_sitting_days. The upstream table is already
+    partitioned by sitting_date, so each partition already holds whole sittings.
+    If a run of this model gets skipped, its own latest partition falls behind
+    and the next window widens to cover the gap.
+  - Tests:
+    - unique on the 4-column grain;
+    - n_correct <= n_questions;
+    - n_questions >= 1;
+    - one custom test that the sum of n_questions equals the row count of
+      int_sitting_answers. That test is what catches a broken window.
+
+  Two decisions for you:
+
+  F. Column names. The README already says scores carry n_questions, so I'd use
+  n_questions and n_correct from here through to the mart. The other option is
+  n_answered, which is more precise, because a no-attempt is counted but was not
+  really answered. I'd keep n_questions for consistency.
+
+  G. Keep year_group in the grain? I'd keep it. README decision 3 says the
+  evidence window resets when the year group changes, and 6 pupils have more
+  than one year group. Without it, the mart has to go back to the answer-level
+  table to apply that rule. It adds no rows unless a pupil changes year group on
+  a single day.
+
+  Once you've answered F and G, I'll write the model.
+
+> F: agreed, n_questions and n_correct. Please also add n_not_attempted, so we
+  can later tell wrong answers from skipped questions.
+  G: agreed, keep year_group. Make sure the unique test covers pupil_id,
+  subject, sitting_date and year_group.
+  Go ahead and show me the model.
+
+● n_not_attempted needs is_no_attempt in int_sitting_answers, which I left out.
+  Adding it means choosing how duplicate copies combine. First I'll check
+  whether copies ever disagree on is_no_attempt (read-only).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● My query was badly written. Here is a simpler version:
+
+  Ran 1 shell command (ctrl+o to expand)
+● No duplicate copies disagree on is_no_attempt, so the copy-combining rule
+  changes nothing today. I'll use logical_and(is_no_attempt), so a question
+  counts as skipped only if every copy was skipped, with a test to enforce that
+  skipped and correct never both hold.
+
+● Update(atom_learning\models\intermediate\int_sitting_answers.sql)
+  ⎿  Added 2 lines, removed 1 line
+      39      select
+      40          session_id,
+      41          question_id,
+      42 -        is_correct                                             
+      42 +        is_correct,                                            
+      43 +        is_no_attempt                                          
+      44      from {{ ref('stg_responses') }}
+      45      {% if is_incremental() %}
+      46      -- A sitting can stay open for weeks, so read its early ans
+          wers too
+
+● Update(atom_learning\models\intermediate\int_sitting_answers.sql)
+  ⎿  Added 3 lines, removed 1 line
+      66      sittings.year_group,
+      67      responses.question_id,
+      68      -- Duplicate copies share a timestamp, so no copy is "first
+          ": correct if any copy is correct
+      69 -    logical_or(responses.is_correct) as is_correct             
+      69 +    logical_or(responses.is_correct) as is_correct,            
+      70 +    -- Skipped only if every copy was skipped, so a correct ans
+         +wer is never also skipped                                      
+      71 +    logical_and(responses.is_no_attempt) as is_no_attempt      
+      72  from responses
+      73  -- Inner join drops answers whose session_id has no sitting row
+      74  inner join sittings on responses.session_id = sittings.session_
+          id
+
+● Update(atom_learning\models\intermediate\schema.yml)
+  ⎿  Added 3 lines
+      11        - dbt_utils.unique_combination_of_columns:
+      12            arguments:
+      13              combination_of_columns: [session_id, question_id]
+      14 +      - dbt_utils.expression_is_true:                          
+      15 +          arguments:                                           
+      16 +            expression: "not (is_no_attempt and is_correct)"   
+      17      columns:
+      18        - name: sitting_date
+      19          description: UK date the sitting finished. Partition co
+          lumn; a sitting counts towards a score from this date.
+
+● Update(atom_learning\models\intermediate\schema.yml)
+  ⎿  Added 41 lines
+      45        - name: is_correct
+      46          description: True if any copy of the answer was correct
+          . No attempt counts as incorrect.
+      47          data_tests: [not_null]
+      48 +      - name: is_no_attempt                                    
+      49 +        description: True if every copy of the answer was a no 
+         +attempt. Never also correct.                                   
+      50 +        data_tests: [not_null]                                 
+      51 +                                                               
+      52 +  - name: int_pupil_subject_daily_totals                       
+      53 +    description: >                                             
+      54 +      Answer counts per pupil, subject, year group and sitting 
+         +date, summed from int_sitting_answers.                         
+      55 +      The mart sums these over its evidence window; percentages
+         + are computed there, after summing.                            
+      56 +    data_tests:                                                
+      57 +      - dbt_utils.unique_combination_of_columns:               
+      58 +          arguments:                                           
+      59 +            combination_of_columns: [pupil_id, subject_name, si
+         +tting_date, year_group]                                        
+      60 +      - dbt_utils.expression_is_true:                          
+      61 +          arguments:                                           
+      62 +            expression: "n_correct + n_not_attempted <= n_quest
+         +ions"                                                          
+      63 +    columns:                                                   
+      64 +      - name: sitting_date                                     
+      65 +        description: UK date the sittings finished. Partition c
+         +olumn.                                                         
+      66 +        data_tests: [not_null]                                 
+      67 +      - name: pupil_id                                         
+      68 +        description: Pupil the counts belong to.               
+      69 +        data_tests: [not_null]                                 
+      70 +      - name: subject_name                                     
+      71 +        description: Subject of the questions (English or Maths
+         +).                                                             
+      72 +        data_tests: [not_null]                                 
+      73 +      - name: year_group                                       
+      74 +        description: Pupil's year group at the sittings. Kept s
+         +o the mart can reset the window when it changes.               
+      75 +        data_tests: [not_null]                                 
+      76 +      - name: n_questions                                      
+      77 +        description: Questions answered or skipped, after dupli
+         +cates are collapsed.                                           
+      78 +        data_tests:                                            
+      79 +          - not_null                                           
+      80 +          - dbt_utils.accepted_range:                          
+      81 +              arguments:                                       
+      82 +                min_value: 1                                   
+      83 +      - name: n_correct                                        
+      84 +        description: Questions answered correctly.             
+      85 +        data_tests: [not_null]                                 
+      86 +      - name: n_not_attempted                                  
+      87 +        description: Questions skipped (is_no_attempt). Counted
+         + in n_questions as incorrect; n_questions - n_correct - n_not_a
+         +ttempted gives wrong answers.                                  
+      88 +        data_tests: [not_null]                                 
+
+● Write(atom_learning\models\intermediate\int_pupil_subject_daily_totals.sql)
+  ⎿  Error: PreToolUse:Write hook error: [Fact-Forcing Gate] (denial #8 this
+     session) First creation of C:\Users\ldtic\Documents\Projects\Atom Learning\
+     atom_learning\models\intermediate\int_pupil_subject_daily_totals.sql:
+     briefly state importers/callers, affected API, data schemas if any, and the
+     user's verbatim instruction, then retry. (ECC_GATEGUARD=off disables this
+     gate.)
+
+● Write(atom_learning\tests\assert_daily_totals_match_sitting_answers.sql)
+  ⎿  Error: PreToolUse:Write hook error: [Fact-Forcing Gate] (denial #9 this
+     session) First creation of C:\Users\ldtic\Documents\Projects\Atom
+     Learning\atom_learning\tests\assert_daily_totals_match_sitting_answers.sql:
+     briefly state importers/callers, affected API, data schemas if any, and
+     the user's verbatim instruction, then retry. (ECC_GATEGUARD=off disables
+     this gate.)
+
+● Update(docs\data_quality.md)
+  ⎿  Added 1 line
+      37  
+      38  - No null `answered_at` or `is_correct`.
+      39  - `is_no_attempt` (3,279 rows) is never also `is_correct`.
+      40 +- Duplicate copies never disagree on `is_no_attempt` (0 of 2,08
+         +2 groups).                                                     
+      41  - Every response's `pupil_id` and `question_id` exist in their 
+          tables.
+      42  - Response `pupil_id` always matches the sitting's `pupil_id`.
+      43  - No answer is logged before its sitting's `started_at`.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The hook blocked the two new files again, so I'm retrying with the facts it
+  wants: nothing reads them yet, the mart will read
+  int_pupil_subject_daily_totals, and you asked to see the model.
+
+● Write(atom_learning\models\intermediate\int_pupil_subject_daily_totals.sql)
+  ⎿  Wrote 37 lines to
+     atom_learning\models\intermediate\int_pupil_subject_daily_totals.sql
+       1 {{
+       2     config(
+       3         incremental_strategy='insert_overwrite',
+       4         partition_by={'field': 'sitting_date', 'data_type': 'dat
+         e', 'granularity': 'day'},
+       6     )
+       7 }}
+       8
+       9 with answers as (
+      10     select
+     … +30 lines (ctrl+o to expand)
+
+● Write(atom_learning\tests\assert_daily_totals_match_sitting_answers.sql)
+  ⎿  Wrote 25 lines to
+     atom_learning\tests\assert_daily_totals_match_sitting_answers.sql
+      1 -- Every answer in int_sitting_answers is counted exactly once in
+         the daily totals.
+      2 -- Catches a broken incremental window, which would drop or doubl
+        e-count a partition.
+      3 with answers as (
+      5         sitting_date,
+      6         count(*) as n_questions
+      7     from {{ ref('int_sitting_answers') }}
+      8     group by sitting_date
+      9 ),
+     … +18 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● int_pupil_subject_daily_totals is written, and dbt parse passes. Nothing has
+  been built yet.
+
+  int_pupil_subject_daily_totals.sql
+  (atom_learning/models/intermediate/int_pupil_subject_daily_totals.sql)
+  - It reads int_sitting_answers. On incremental runs it reads only the last
+    lookback_days of sitting_date.
+  - It groups by sitting_date, pupil_id, subject_name and year_group, and
+    counts:
+    - n_questions = count(*)
+    - n_correct = countif(is_correct)
+    - n_not_attempted = countif(is_no_attempt)
+  - Wrong answers are n_questions - n_correct - n_not_attempted. I've noted that
+    in the column's description, not stored it as a column.
+
+  Change to int_sitting_answers.sql
+  (atom_learning/models/intermediate/int_sitting_answers.sql): it now has
+  is_no_attempt = logical_and(...) across duplicate copies, which means skipped
+  only if every copy was skipped. A new test checks that no row is both skipped
+  and correct.
+
+  Tests in intermediate/schema.yml
+  (atom_learning/models/intermediate/schema.yml):
+  - Unique on pupil_id, subject_name, sitting_date and year_group, as you asked.
+    The column is subject_name, per decision D.
+  - n_correct + n_not_attempted <= n_questions. Since a skipped question is
+    never correct, this also covers n_correct <= n_questions.
+  - n_questions >= 1, plus not-null on every column.
+  - assert_daily_totals_match_sitting_answers.sql
+    (atom_learning/tests/assert_daily_totals_match_sitting_answers.sql) checks,
+    for each sitting_date, that the daily totals add up to the answer count. A
+    broken incremental window would fail it.
+
+  data_quality.md (docs/data_quality.md) now records that duplicate copies never
+  disagree on is_no_attempt.
+
+  Important for the build: int_sitting_answers has a new column. With dbt's
+  default on_schema_change: ignore, a normal incremental run would silently
+  leave that column out of the existing table. So this build needs a full
+  refresh. May I run these, or will you?
+  1. dbt build --select int_sitting_answers+ --full-refresh. This rebuilds
+     int_sitting_answers and creates the daily totals.
+  2. dbt build --select int_sitting_answers+, a normal incremental run, to check
+     that it gives the same result.
+
+  I'd expect int_sitting_answers to have 44,366 rows again, and the daily totals
+  to have sum(n_questions) = 44,366, which the custom test checks.
+
+  Assumption to add to the README: if duplicate copies disagree, a question
+  counts as skipped only if every copy was skipped. That doesn't happen today.
+
+> <ide_opened_file>The user opened the file
+  c:\Users\ldtic\Documents\Projects\Atom Learning\atom_learning\tests\assert_sc
+  ored_sittings_within_max_sitting_days.sql in the IDE. This may or may not be
+  related to the current task.</ide_opened_file>
+
+> Before the mart: our incremental models use the default on_schema_change,
+  which silently drops new columns. Give me the trade-off between fail and
+  append_new_columns, and your advice. Make the change once I decide.
+
+● In plain words: both settings stop the silent drop. They differ in what
+  happens to rows already in the table.
+
+  fail: the run stops with an error whenever the model's columns no longer match
+  the table. You then run --full-refresh on purpose, and every row is rebuilt
+  with the new column filled in.
+  - Pro: a column is never half-filled. Every row comes from the same logic, so
+    a re-run gives the same output, as CLAUDE.md asks.
+  - Pro: it also catches a column that was removed or renamed.
+    append_new_columns ignores those.
+  - Con: every schema change needs a full rebuild. At 100M+ rows that costs real
+    money and time, but schema changes are rare and planned.
+
+  append_new_columns: dbt adds the new column to the table and carries on.
+  - Pro: there's no full rebuild, and the pipeline keeps running.
+  - Con: only the partitions in the lookback window get real values. Every older
+    partition holds NULL in the new column.
+  - That's a problem here, because every row feeds a score. Take our own
+    is_no_attempt. With this setting, countif(is_no_attempt) would count old
+    nulls as 0, so n_not_attempted would be too low for all history. The
+    not_null test would catch it in our case, but then you need a full refresh
+    anyway. A column without a not_null test would go wrong without anyone
+    noticing.
+  - It suits columns where nulls in history are fine, such as an audit
+    timestamp. We have none of those.
+
+  My advice: fail. The cost is a deliberate full refresh now and then. In
+  return, the table can never mix old and new logic, and that matters more for a
+  score than avoiding a rebuild.
+
+  The change, once you decide: one line, +on_schema_change: fail, under
+  intermediate in dbt_project.yml. The mart gets it automatically if we add the
+  line at the project level instead. I'd put it at project level, so any future
+  incremental model has it by default.
+
+  (There's a third option, sync_all_columns, which also drops removed columns.
+  It has the same history-null problem as append_new_columns, so I'd skip it.)
+
+  Which do you want: fail or append_new_columns? And should it go at project
+  level or under intermediate only?
+
+> Go with fail, at project level. Add a one-line design decision to the README
+  explaining why. Then run dbt parse to check the config, and move on to
+  planning fct_pupil_subject_sats_score.
+
+● Update(atom_learning\dbt_project.yml)
+  ⎿  Added 2 lines
+      21  
+      22  models:
+      23    atom_learning:
+      24 +    # Stop on a column change rather than leave old partitions 
+         +null; fix with a deliberate --full-refresh                     
+      25 +    +on_schema_change: fail                                    
+      26      staging:
+      27        +materialized: view
+      28      intermediate:
+
+● Update(README.md)
+  ⎿  Error: PreToolUse:Edit hook error: [Fact-Forcing Gate] (denial #10 this
+     session) First edit of C:\Users\ldtic\Documents\Projects\Atom
+     Learning\README.md: briefly state importers/callers, affected API, data
+     schemas if any, and the user's verbatim instruction, then retry.
+     (ECC_GATEGUARD=off disables this gate.)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The dbt config is in place and parses cleanly, with on_schema_change set to
+  fail on every model. The hook blocked the README edit, so I'm leaving the
+  design-decision line out for now.
+
+● Update(README.md)
+  ⎿  Added 1 line
+      29  3. **Evidence window** — percentage correct across the academic
+           year to date (1 Sept → as-of timestamp). Resets when year grou
+          p changes. The data ends 16 Sep 2026, so the default `as_of_dat
+          e` scores only one week of 2026/27 (26 pupils); run with `--var
+          s 'as_of_date: 2026-07-21'` for the full 2025/26 year.
+      30  4. **Mapping** — [GOV.UK 2026 KS2 raw → scaled conversion table
+          s](https://www.gov.uk/government/publications/key-stage-2-tests
+          -2026-scaled-scores/2026-key-stage-2-scaled-score-conversion-ta
+          bles) (Reading, Maths) seeded in `seeds/ks2_scaled_score_conver
+          sion.csv`, raw marks converted to % of max, linearly interpolat
+          ed.
+      31  5. **Point-in-time** — one row per pupil, subject and `as_of_da
+          te` (dbt var; defaults to the latest answer date in the data, n
+          ever today). Each run replaces only that date's partition, so h
+          istory accumulates and any past date can be rebuilt exactly by 
+          re-running it. Chosen over a `valid_from` / `valid_to` history,
+           which is harder to keep correct incrementally when answers arr
+          ive late.
+      32 +6. **Schema changes** — incremental models use `on_schema_chang
+         +e: fail`, so a new column forces a deliberate `--full-refresh` 
+         +instead of being silently dropped (`ignore`) or left null in ev
+         +ery partition outside the lookback (`append_new_columns`), whic
+         +h would mix old and new logic in one table.                    
+      33  
+      34  Defaults applied: all dates (`as_of_date`, the 1 September wind
+          ow start, answer dates) are UK dates (Europe/London), not UTC; 
+          complete, non-deleted sittings for non-deleted pupils only (a n
+          ull `is_deleted` counts as not deleted); survey and adaptive si
+          ttings excluded; answers whose `session_id` has no sitting row 
+          are excluded; answers logged 1 second after `finished_at` are k
+          ept (timestamp rounding); only `summative_assessment` sittings 
+          count (`entrance_exam` and `mock_session`, 40 sittings, are ass
+          umed to have a different purpose and difficulty; to confirm wit
+          h the product team); `is_no_attempt` counts as incorrect; dupli
+          cate answers to the same question in one sitting (identical tim
+          estamps) collapse to one answer, correct if any copy is correct
+          ; percentages below the lowest GOV.UK mark that has a scaled sc
+          ore (raw 0–2 = "no scaled score") are clamped to 80 and flagged
+           `below_scale`; scores carry `n_questions` and a `low_evidence`
+           flag (< 20 questions).
+      35  
+
+● I added decision 6 to the README.
+
+  This setting affects your next build. int_sitting_answers gained
+  is_no_attempt. If it hasn't been rebuilt with --full-refresh since then, a
+  normal run will now fail. That's the new setting working. Run dbt build
+  --select int_sitting_answers+ --full-refresh before the mart.
+
+  ---
+
+  Plan: fct_pupil_subject_sats_score
+
+  What it is
+
+  One row per pupil, subject and as_of_date. Each run builds one as_of_date and
+  replaces only that date's partition, so earlier dates are kept.
+
+  How a row is built
+
+  1. Rows to fill. Every non-deleted pupil (242) × every subject in the seed (2)
+     = 484 rows per as_of_date. Pupils with no evidence still get their row.
+  2. The as_of_date.
+     - If the as_of_date variable is set, use it.
+     - If not, use max(sitting_date) from the daily totals. That's never
+       current_date().
+  3. Evidence window. From 1 September of the academic year that contains
+     as_of_date, up to and including as_of_date, filtered on sitting_date. A
+     date in September or later uses 1 September of the same year; earlier dates
+     use the year before.
+  4. Year group reset. Keep only the rows for the pupil's latest year_group
+     inside the window.
+  5. Sums. Add up n_questions, n_correct and n_not_attempted. Then pct_correct =
+     n_correct / n_questions, as NUMERIC.
+  6. Converting to the KS2 scale.
+     - Equivalent raw mark = pct_correct × max_raw_score. That's 50 for Reading
+       and 110 for Maths.
+     - Look up the two whole marks either side in the seed and interpolate
+       linearly between their scaled scores.
+  7. Flags.
+     - below_scale: the equivalent mark is under 3, the lowest mark GOV.UK gives
+       a scaled score. The score is set to 80.
+     - low_evidence: n_questions is under 20.
+  8. score_status. scored when there's evidence in the window, otherwise
+     no_answers_in_window.
+
+  Columns
+
+  ┌─────────────────────────────────┬─────────┬─────────────────────────────┐
+  │             Column              │  Type   │            Note             │
+  ├─────────────────────────────────┼─────────┼─────────────────────────────┤
+  │ as_of_date                      │ DATE    │ Partition column            │
+  ├─────────────────────────────────┼─────────┼─────────────────────────────┤
+  │ pupil_id                        │ STRING  │                             │
+  ├─────────────────────────────────┼─────────┼─────────────────────────────┤
+  │ subject_name                    │ STRING  │ English or Maths            │
+  ├─────────────────────────────────┼─────────┼─────────────────────────────┤
+  │ ks2_test                        │ STRING  │ "English reading" or        │
+  │                                 │         │ "Mathematics"               │
+  ├─────────────────────────────────┼─────────┼─────────────────────────────┤
+  │ year_group                      │ INT64   │ Null when there's no        │
+  │                                 │         │ evidence                    │
+  ├─────────────────────────────────┼─────────┼─────────────────────────────┤
+  │ window_start_date               │ DATE    │ 1 September used for the    │
+  │                                 │         │ window                      │
+  ├─────────────────────────────────┼─────────┼─────────────────────────────┤
+  │ n_questions, n_correct,         │ INT64   │ 0 when there's no evidence  │
+  │ n_not_attempted                 │         │                             │
+  ├─────────────────────────────────┼─────────┼─────────────────────────────┤
+  │ pct_correct                     │ NUMERIC │ Null when there's no        │
+  │                                 │         │ evidence                    │
+  ├─────────────────────────────────┼─────────┼─────────────────────────────┤
+  │ scaled_score                    │ INT64   │ Null when there's no        │
+  │                                 │         │ evidence                    │
+  ├─────────────────────────────────┼─────────┼─────────────────────────────┤
+  │ score_status                    │ STRING  │                             │
+  ├─────────────────────────────────┼─────────┼─────────────────────────────┤
+  │ below_scale, low_evidence       │ BOOL    │                             │
+  └─────────────────────────────────┴─────────┴─────────────────────────────┘
+
+  The key for the production database is (pupil_id, subject_name, as_of_date).
+  Every column has a fixed type and the table has no nested fields, so it maps
+  directly onto a Postgres or MySQL table.
+
+  Config
+
+  - incremental, insert_overwrite. Partitioned by as_of_date; clustered by
+    pupil_id, subject_name.
+  - full_refresh: false. This one matters. The table holds history for many
+    as_of_dates. Without this setting, dbt build --full-refresh would rebuild it
+    with only today's date and delete every past date. The cost: when the
+    mart's schema changes, you have to drop the table on purpose and backfill
+    each date again. Because the intermediate tables keep everything, a backfill
+    gives exactly the same result.
+
+  Tests
+
+  - Unique on (pupil_id, subject_name, as_of_date).
+  - scaled_score between 80 and 120. score_status must be one of the allowed
+    values.
+  - scaled_score is null exactly when score_status = 'no_answers_in_window'.
+  - A custom test: each as_of_date has exactly (non-deleted pupils × seed
+    subjects) rows.
+
+  Decisions for you
+
+  H. Default as_of_date. CLAUDE.md says "latest answer date". The closest thing
+  in our models is the latest sitting_date, since a sitting counts from its
+  finish date. Using the latest answer date would mean reading stg_responses
+  just to find one date. Advice: use the latest sitting_date, and change the
+  CLAUDE.md wording.
+
+  I. Rounding. GOV.UK scaled scores are whole numbers. Advice: round to an
+  integer scaled_score (BigQuery's ROUND on NUMERIC rounds halves away from
+  zero) and keep pct_correct for precision. The alternative is a NUMERIC score
+  with decimals, which implies more precision than the method has.
+
+  J. Year group reset when a pupil has two year groups in one window. Advice:
+  keep the year group of the latest sitting in the window. If two sittings fall
+  on the same day, take the higher year group, so the choice is always the same.
+  I'd also run one read-only query to see whether any of the 6 pupils with more
+  than one year group actually change within an academic year. If none do, this
+  rule protects production data and changes nothing today.
+
+  K. score_status values. Advice: just scored and no_answers_in_window. Low
+  evidence and below scale stay as separate flags, because those rows do have a
+  score. One status for "no answers ever" and another for "none this year" would
+  add a value the app has to handle without changing what it shows.
+
+  L. Low-evidence threshold. Advice: a dbt variable low_evidence_questions: 20,
+  next to the other two, rather than a number written into the SQL.
+
+  M. Subject column. Advice: keep subject_name for consistency and add ks2_test,
+  so the app can show "English reading" without its own lookup.
+
+  What I'm unsure of
+
+  - English gives raw 3 a scaled score of 81. So clamping below-scale scores to
+    80 jumps from 80 straight to 81 for Reading. That follows GOV.UK, but it's
+    worth one line in the README.
+  - Point in time means "as the data says now", not "as known then". Re-running
+    a past as_of_date after late data has arrived will change that date's score.
+    Raw has no load timestamp, so we can't rebuild "what we knew on that date".
+    That's an assumption for the README.
+
+  Tell me H to M, and whether I can run the read-only query on year groups for
+  J.
+> Plan fct_pupil_subject_sats_score from int_pupil_subject_daily_totals. Cover:
+  1. The pupil and subject spine, so every pupil gets a row for every subject.
+  2. Should excluded subjects get a row with score_status = no_sats_equivalent,
+  so the table covers "every subject" as the brief says? Pros and cons.
+  3. The academic-year window and year group reset.
+  4. Percentage to scaled score: interpolation and rounding rules.
+  5. Every score_status value and when it applies.
+  6. Output columns with types, and the primary key.
+  7. Materialisation: incremental with insert_overwrite on as_of_date, or
+  table? Reconcile the README and dbt_project.yml.
+     Do not write code until I agree.
+
+● Most of this extends the plan I just gave you. The new parts are points 2 and
+  7. I'd rather not guess the ID types in point 6, so I'll check them first
+  (read-only, schema only).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Both intermediate tables are built with is_no_attempt, so the full refresh has
+  been run. pupil_id is a STRING.
+
+  Here's the plan. No code yet.
+
+  1. Spine of pupils and subjects
+
+  - Pupils: stg_pupils where not is_deleted. Today that's 242 pupils.
+  - Subjects: distinct subject_name + ks2_test + max_raw_score from the seed.
+    Today that's 2.
+  - cross join the two to get 484 rows per as_of_date, then left join the window
+    totals onto it. A pupil with no evidence keeps their row and gets zero
+    counts.
+  - Both lists come from one source each. A new seed subject or a new pupil
+    shows up automatically.
+
+  2. Should excluded subjects get a no_sats_equivalent row?
+
+  Pros
+  - It covers "every subject" in the brief literally, and that coverage is
+    visible in the table.
+  - The app gets an explicit reason why there's no Science score, instead of the
+    subject simply being absent.
+
+  Cons
+  - Rows go from 484 to 1,694 per as_of_date, about 3.5×. Every extra row is
+    null, and that multiplies at production scale and in the app database.
+  - The extra rows say nothing about the pupil. "Science has no SATs scale" is
+    true of everyone, on every date. A fact like that belongs in one row per
+    subject, not one per pupil per day.
+  - It mixes "can never be scored" with "not scored yet", so every consumer has
+    to filter on status first.
+  - The spine would come from course_hierarchy. "Screeners" and "Wellbeing"
+    aren't school subjects, so they'd show up as subjects anyway.
+
+  My advice: no. Read "every subject" as every SATs subject. Reading and Maths
+  are the KS2 tests that report a scaled score that fits. KS2 Science is
+  teacher-assessed and has no scale. The README already gives this reason in
+  decision 1. If the app needs the list, a small subject → is_scored lookup
+  could serve it, but I wouldn't build that until someone asks.
+
+  3. Academic-year window and year group reset
+
+  - Window: window_start_date is 1 September of the academic year that contains
+    as_of_date: the same year if the month is September or later, otherwise the
+    year before. Rows count if window_start_date <= sitting_date <= as_of_date.
+  - Default as_of_date: max(sitting_date) in the daily totals, never today
+    (decision H).
+  - Year group reset: inside the window, keep only rows for the pupil's latest
+    year_group. Pick the year group from the latest sitting_date, and on the
+    same day the higher year group, so the choice always gives the same answer
+    (decision J).
+
+    Usually the 1 September window does the reset on its own. The rule only
+    matters if a pupil's year group changes mid-year. I'd still like to run that
+    read-only check on the 6 pupils.
+  - Edge: on 1 September itself, the window is one day, so scores will be thin
+    until evidence builds up. That's the behaviour we've documented, not a bug.
+
+  4. From percentage to scaled score
+
+  Work out the equivalent raw mark: r = pct_correct × max_raw_score, where
+  max_raw_score is 50 for Reading and 110 for Maths. Then choose one of:
+
+  - (a) Linear interpolation (README decision 4 today). Take lo = floor(r) and
+    hi = ceil(r), and compute s_lo + (r − lo) × (s_hi − s_lo). That needs two
+    joins to the seed, plus a special case when r is a whole number.
+  - (b) Round to the nearest whole mark, then look it up. round(r) gives a raw
+    mark, and one join gives the GOV.UK score directly.
+
+  My advice: (b). Real SATs pupils score whole marks, so this is exactly the
+  GOV.UK table, with one join and nothing extra to explain. The difference from
+  (a) is at most 1 scaled point after rounding. If you agree, README decision 4
+  needs one wording change.
+
+  Rules either way:
+  - pct_correct is NUMERIC, n_correct / n_questions, computed after summing.
+  - Rounding uses BigQuery ROUND on NUMERIC, which rounds halves away from zero.
+    The result is a scaled_score INT64 (decision I).
+  - below_scale: the rounded mark has no scaled score in the seed (raw 0 to 2).
+    The score is clamped to 80. The cut-off comes from the seed: the lowest
+    raw_score with a non-null scaled_score. It isn't hardcoded as 3.
+  - 100% gives the top mark, which is 120 for both subjects.
+  - Noted for the README: Reading's lowest real scaled score is 81, so Reading
+    scores jump from 80 to 81.
+
+  5. score_status values
+
+  Value: scored
+  When it applies: n_questions >= 1 in the window
+  scaled_score: 80–120
+  ────────────────────────────────────────
+  Value: no_answers_in_window
+  When it applies: No counted answers between window_start_date and as_of_date.
+  That includes pupils with no answers at all, pupils whose answers are all
+  excluded (unscored sitting types, year 11 and so on), and pupils whose
+  answers are all from earlier years
+  scaled_score: null
+  ────────────────────────────────────────
+  Value: ~~no_sats_equivalent~~
+  When it applies: Only if you choose yes in point 2
+  scaled_score: null
+
+  low_evidence (n_questions < 20) and below_scale stay as separate BOOL flags,
+  because those rows do have a score. A status column can't say "scored and low
+  evidence" without listing every combination (decision K).
+
+  6. Output columns
+
+  ┌───────────────────┬─────────┬───────────────────────┐
+  │      Column       │  Type   │ Null when no evidence │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ as_of_date        │ DATE    │ no                    │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ pupil_id          │ STRING  │ no                    │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ subject_name      │ STRING  │ no                    │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ ks2_test          │ STRING  │ no                    │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ window_start_date │ DATE    │ no                    │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ year_group        │ INT64   │ yes                   │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ n_questions       │ INT64   │ no (0)                │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ n_correct         │ INT64   │ no (0)                │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ n_not_attempted   │ INT64   │ no (0)                │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ pct_correct       │ NUMERIC │ yes                   │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ scaled_score      │ INT64   │ yes                   │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ score_status      │ STRING  │ no                    │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ below_scale       │ BOOL    │ no (false)            │
+  ├───────────────────┼─────────┼───────────────────────┤
+  │ low_evidence      │ BOOL    │ no (false)            │
+  └───────────────────┴─────────┴───────────────────────┘
+
+  Counts are 0, not null, because "0 questions" is a true fact. pct_correct and
+  scaled_score are null because a score of 0/0 doesn't exist.
+
+  Primary key: (pupil_id, subject_name, as_of_date). It's tested with
+  unique_combination_of_columns, plus not_null on each part. All the columns are
+  flat scalar types, so the table maps straight onto an app database table,
+  with that composite primary key and an index on pupil_id.
+
+  7. Materialisation, and the README against dbt_project.yml
+
+  The README says the mart is incremental. dbt_project.yml says marts:
+  +materialized: table. They disagree.
+
+  - table: every run rebuilds the whole table from one as_of_date, which wipes
+    the history. To keep history, it would need a spine of every past
+    as_of_date, rebuilt on every run. That's cheap with 242 pupils, but at
+    production scale it means millions of pupils × days, rebuilt every day.
+  - incremental + insert_overwrite on as_of_date: each run replaces one date's
+    partition. Past dates stay, and any of them can be rebuilt exactly with
+    --vars 'as_of_date: …'. Cluster on pupil_id, subject_name.
+
+  My advice: incremental. Change marts: +materialized: incremental in
+  dbt_project.yml so the config agrees with the README. Put the partition
+  settings and full_refresh: false in the model's own config. Without that, dbt
+  build --full-refresh would rebuild the mart from today's date only and delete
+  every past as_of_date. The cost is that a mart schema change, which
+  on_schema_change: fail would block, means dropping the table on purpose and
+  backfilling the dates. That's acceptable, because the intermediate tables keep
+  everything, so a backfill is exact.
+
+  Your decisions
+
+  - 2: include no_sats_equivalent rows? My advice is no.
+  - 4: (a) interpolate, or (b) round to the nearest mark and look it up? My
+    advice is (b).
+  - 7: incremental with full_refresh: false? My advice is yes.
+  - H to M from my last message, if they're not already settled by this plan:
+    - H: default as_of_date = latest sitting_date.
+    - I: integer score.
+    - J: latest year group in the window.
+    - K: statuses as in point 5.
+    - L: a variable low_evidence_questions: 20.
+    - M: keep subject_name and add ks2_test.
+  - May I run the read-only query for J? It checks whether any pupil changes
+    year group within an academic year.
+
+> 2: Before I decide, give me your reasons for "no". The brief says "every
+  pupil, in every subject", so I'm leaning towards including the rows with
+  no_sats_equivalent.
+  4: (b), round to the nearest mark and look it up. Round half up. Update
+  README decision 4.
+  7: Yes, full_refresh: false. But this conflicts with on_schema_change: fail.
+  Write a short README note on how to change the mart's columns safely.
+  H to M: agreed.
+  Yes, run the read-only query for J.
+
+● I'll run the read-only check for J first. The two README edits come after the
+  reasons on point 2.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The rule matters today: four scored pupils switch year groups within 2025/26,
+  and one jumps from Year 2 to Year 6, which looks like bad data. I'm checking
+  the timing of each change and the evidence per year group before deciding
+  anything.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Here are the results for J, my reasons on point 2, and the two README edits.
+
+  J: what the data shows
+
+  Four scored pupils change year group partway through 2025/26. The year groups
+  never overlap: each pupil switches once and never switches back.
+
+  ┌──────────┬──────────────────────────────┬────────────────────────────────┐
+  │  Pupil   │            Before            │             After              │
+  ├──────────┼──────────────────────────────┼────────────────────────────────┤
+  │ 73ef4e7f │ Year 2, Nov–Feb, 201 answers │ Year 3, 19 May, 100 answers    │
+  ├──────────┼──────────────────────────────┼────────────────────────────────┤
+  │ 8769242d │ Year 2, Nov–Feb, 189 answers │ Year 3, 19 May, 124 answers    │
+  ├──────────┼──────────────────────────────┼────────────────────────────────┤
+  │ dcaf251d │ Year 2, Nov–Feb, 161 answers │ Year 3, 19–20 May, 124 answers │
+  ├──────────┼──────────────────────────────┼────────────────────────────────┤
+  │ a71f18fc │ Year 2, Nov, 152 answers     │ Year 6, Feb, 213 answers       │
+  └──────────┴──────────────────────────────┴────────────────────────────────┘
+
+  Year groups should only change on 1 September, and a jump from Year 2 to Year
+  6 isn't a real move. It looks more like year_group_at_sitting sometimes
+  records the level of the assessment, not the pupil's actual year. I'm not sure
+  of that, and the data can't settle it.
+
+  What this means for J: with the rule we agreed, latest year group only, a
+  score at 21 July 2026 for these 4 pupils uses only their later evidence. For
+  example, 73ef4e7f is scored on 100 Year 3 answers, and their 201 Year 2
+  answers are dropped. The pupil who jumped is scored on Year 6 work. I still
+  advise J, because README decision 3 says assessments are pitched at the year
+  group, so mixing levels would blur what the score means. But you agreed J
+  before seeing this, so: keep J, or score all evidence in the academic year
+  whatever the year group? Either way I'll add this as data quality row 12, with
+  "Is year_group_at_sitting the pupil's year or the assessment's level?" as a
+  question for the product team.
+
+  2: my reasons for "no", and the honest case for "yes"
+
+  My reasons for "no":
+  1. The extra rows say nothing about the pupil. "Science has no SATs scale" is
+     equally true for all 242 pupils on every date. Storing it 1,210 times per
+     as_of_date repeats one fact about the subject, row after row.
+  2. Cost and noise in the app database. Rows go 3.5× higher, and every extra
+     row is null. At production scale that's millions of rows a day the app has
+     to store and filter out.
+  3. Two kinds of empty in one column. "No score yet" changes as the pupil sits
+     assessments. "No score ever possible" never changes. Mixing them means
+     every query has to start with where score_status != 'no_sats_equivalent'.
+  4. Some of the "subjects" aren't school subjects. Screeners and Wellbeing
+     would get a SATs row, which would look odd in a SATs table.
+
+  The honest case for "yes":
+  - The brief says "every pupil, in every subject". The reviewers mark
+    judgement, and a reviewer may read that literally.
+  - The cost is tiny today: 1,694 rows.
+  - It makes the exclusion visible in the output, not only in the README.
+
+  A middle option: include the rows for real subjects only (Science, Verbal
+  Reasoning, Non-Verbal Reasoning) and leave Screeners and Wellbeing out of the
+  table, explaining them in the README. That meets "every subject" without
+  giving a non-subject a SATs row. It still has costs 1 to 3, but smaller.
+
+  Any of the three is defensible if the README says why. I'd still go with "no"
+  plus a clear line in decision 1. If you'd rather show the coverage, choose the
+  middle option over including all 7.
+
+● Update(README.md)
+  ⎿  Added 1 line, removed 1 line
+      27  1. **Subjects** — only those with a real KS2 SATs equivalent: M
+          aths → Maths, English → Reading. Science, Verbal/Non-Verbal Rea
+          soning, Screeners and Wellbeing are excluded: there's no SATs s
+          cale to anchor them to.
+      28  2. **Year groups** — every Year 1–6 pupil is scored as "on trac
+          k for KS2", assuming assessments are pitched at the pupil's yea
+          r group. `year_group` is kept on every row so the score is read
+           as a projection below Year 6. Year groups 11/14/15 are treated
+           as bad data.
+      29  3. **Evidence window** — percentage correct across the academic
+           year to date (1 Sept → as-of timestamp). Resets when year grou
+          p changes. The data ends 16 Sep 2026, so the default `as_of_dat
+          e` scores only one week of 2026/27 (26 pupils); run with `--var
+          s 'as_of_date: 2026-07-21'` for the full 2025/26 year.
+      30 -4. **Mapping** — [GOV.UK 2026 KS2 raw → scaled conversion table
+         -s](https://www.gov.uk/government/publications/key-stage-2-tests
+         --2026-scaled-scores/2026-key-stage-2-scaled-score-conversion-ta
+         -bles) (Reading, Maths) seeded in `seeds/ks2_scaled_score_conver
+         -sion.csv`, raw marks converted to % of max, linearly interpolat
+         -ed.                                                            
+      30 +4. **Mapping** — [GOV.UK 2026 KS2 raw → scaled conversion table
+         +s](https://www.gov.uk/government/publications/key-stage-2-tests
+         +-2026-scaled-scores/2026-key-stage-2-scaled-score-conversion-ta
+         +bles) (Reading, Maths) seeded in `seeds/ks2_scaled_score_conver
+         +sion.csv`, the pupil's % correct is turned into an equivalent r
+         +aw mark (% × the test's max marks: 50 Reading, 110 Maths), roun
+         +ded half up to a whole mark, and looked up — so every score is 
+         +an exact GOV.UK value, as a real pupil scoring whole marks woul
+         +d get.                                                         
+      31  5. **Point-in-time** — one row per pupil, subject and `as_of_da
+          te` (dbt var; defaults to the latest answer date in the data, n
+          ever today). Each run replaces only that date's partition, so h
+          istory accumulates and any past date can be rebuilt exactly by 
+          re-running it. Chosen over a `valid_from` / `valid_to` history,
+           which is harder to keep correct incrementally when answers arr
+          ive late.
+      32  6. **Schema changes** — incremental models use `on_schema_chang
+          e: fail`, so a new column forces a deliberate `--full-refresh` 
+          instead of being silently dropped (`ignore`) or left null in ev
+          ery partition outside the lookback (`append_new_columns`), whic
+          h would mix old and new logic in one table.
+      33  
+
+● Update(README.md)
+  ⎿  Added 11 lines
+      31  5. **Point-in-time** — one row per pupil, subject and `as_of_da
+          te` (dbt var; defaults to the latest answer date in the data, n
+          ever today). Each run replaces only that date's partition, so h
+          istory accumulates and any past date can be rebuilt exactly by 
+          re-running it. Chosen over a `valid_from` / `valid_to` history,
+           which is harder to keep correct incrementally when answers arr
+          ive late.
+      32  6. **Schema changes** — incremental models use `on_schema_chang
+          e: fail`, so a new column forces a deliberate `--full-refresh` 
+          instead of being silently dropped (`ignore`) or left null in ev
+          ery partition outside the lookback (`append_new_columns`), whic
+          h would mix old and new logic in one table.
+      33  
+      34 +### Changing the mart's columns                                
+      35 +                                                               
+      36 +`fct_pupil_subject_sats_score` holds one partition per `as_of_d
+         +ate`, so it has `full_refresh: false`: a `--full-refresh` would
+         + otherwise rebuild it with only the current date and delete all
+         + history. With `on_schema_change: fail` that means a column cha
+         +nge stops the run and `--full-refresh` cannot fix it. To change
+         + columns safely:                                               
+      37 +                                                               
+      38 +1. List the dates held: `select distinct as_of_date from liam_t
+         +ickner.fct_pupil_subject_sats_score`.                          
+      39 +2. Copy the table to a backup (`bq cp liam_tickner.fct_pupil_su
+         +bject_sats_score liam_tickner.fct_pupil_subject_sats_score_back
+         +up`), then drop the original.                                  
+      40 +3. Rebuild each date: `dbt build --select fct_pupil_subject_sat
+         +s_score --vars 'as_of_date: <date>'`.                          
+      41 +4. Check row counts per date match the backup, then drop the ba
+         +ckup.                                                          
+      42 +                                                               
+      43 +Rebuilt dates match the originals because the intermediate tabl
+         +es keep all history; they differ only if answers for those date
+         +s arrived late.                                                
+      44 +                                                               
+      45  Defaults applied: all dates (`as_of_date`, the 1 September wind
+          ow start, answer dates) are UK dates (Europe/London), not UTC; 
+          complete, non-deleted sittings for non-deleted pupils only (a n
+          ull `is_deleted` counts as not deleted); survey and adaptive si
+          ttings excluded; answers whose `session_id` has no sitting row 
+          are excluded; answers logged 1 second after `finished_at` are k
+          ept (timestamp rounding); only `summative_assessment` sittings 
+          count (`entrance_exam` and `mock_session`, 40 sittings, are ass
+          umed to have a different purpose and difficulty; to confirm wit
+          h the product team); `is_no_attempt` counts as incorrect; dupli
+          cate answers to the same question in one sitting (identical tim
+          estamps) collapse to one answer, correct if any copy is correct
+          ; percentages below the lowest GOV.UK mark that has a scaled sc
+          ore (raw 0–2 = "no scaled score") are clamped to 80 and flagged
+           `below_scale`; scores carry `n_questions` and a `low_evidence`
+           flag (< 20 questions).
+      46  
+      47  ## Data quality issues
+
+● I've made both README edits:
+
+  - Decision 4 now describes method (b): % correct → equivalent raw mark →
+    rounded half up → looked up. Round half up is the same as BigQuery's ROUND
+    here, because the mark is never negative. So the SQL is a plain round(), and
+    I'll add a comment saying it rounds half up.
+  - A new "Changing the mart's columns" section, after decision 6. It explains
+    why full_refresh: false and on_schema_change: fail together block the usual
+    fix. The safe steps:
+    a. List the as_of_dates the table holds.
+    b. Back up the table and drop it.
+    c. Rebuild each date with --vars.
+    d. Check row counts per date against the backup, then drop the backup.
+
+    It also notes that rebuilt dates match exactly unless answers for those
+    dates arrived late.
+
+  Two decisions are still open before I write the mart:
+  1. Point 2: "no" (my advice), the middle option (Science, VR and NVR only), or
+     all 7 subjects?
+  2. J, given the new data: keep "latest year group only", or score all evidence
+     in the academic year whatever the year group?
+
+  Your context window is about 83% full. A /compact after these two answers
+  would be a good point, before we write the mart.
+
+> 1. Point 2: all 7 subjects, with no_sats_equivalent for those with no KS2
+  test. Add a README line explaining that this covers "every subject" in the
+  brief.
+  2. J: keep latest year group only. Add the number of affected pupils to the
+  README.
+
+● Update(README.md)
+  ⎿  Added 1 line, removed 1 line
+      24  
+      25  ## Decisions
+      26  
+      27 -1. **Subjects** — only those with a real KS2 SATs equivalent: M
+         -aths → Maths, English → Reading. Science, Verbal/Non-Verbal Rea
+         -soning, Screeners and Wellbeing are excluded: there's no SATs s
+         -cale to anchor them to.                                        
+      27 +1. **Subjects** — only those with a real KS2 SATs equivalent: M
+         +aths → Maths, English → Reading. Science, Verbal/Non-Verbal Rea
+         +soning, Screeners and Wellbeing are not scored: there's no SATs
+         + scale to anchor them to. They still get a row per pupil with `
+         +score_status = no_sats_equivalent`, so the table covers "every 
+         +pupil, in every subject" as the brief asks.                    
+      28  2. **Year groups** — every Year 1–6 pupil is scored as "on trac
+          k for KS2", assuming assessments are pitched at the pupil's yea
+          r group. `year_group` is kept on every row so the score is read
+           as a projection below Year 6. Year groups 11/14/15 are treated
+           as bad data.
+      29  3. **Evidence window** — percentage correct across the academic
+           year to date (1 Sept → as-of timestamp). Resets when year grou
+          p changes. The data ends 16 Sep 2026, so the default `as_of_dat
+          e` scores only one week of 2026/27 (26 pupils); run with `--var
+          s 'as_of_date: 2026-07-21'` for the full 2025/26 year.
+      30  4. **Mapping** — [GOV.UK 2026 KS2 raw → scaled conversion table
+          s](https://www.gov.uk/government/publications/key-stage-2-tests
+          -2026-scaled-scores/2026-key-stage-2-scaled-score-conversion-ta
+          bles) (Reading, Maths) seeded in `seeds/ks2_scaled_score_conver
+          sion.csv`, the pupil's % correct is turned into an equivalent r
+          aw mark (% × the test's max marks: 50 Reading, 110 Maths), roun
+          ded half up to a whole mark, and looked up — so every score is 
+          an exact GOV.UK value, as a real pupil scoring whole marks woul
+          d get.
+
+● Update(README.md)
+  ⎿  Added 1 line, removed 1 line
+      26  
+      27  1. **Subjects** — only those with a real KS2 SATs equivalent: M
+          aths → Maths, English → Reading. Science, Verbal/Non-Verbal Rea
+          soning, Screeners and Wellbeing are not scored: there's no SATs
+           scale to anchor them to. They still get a row per pupil with `
+          score_status = no_sats_equivalent`, so the table covers "every 
+          pupil, in every subject" as the brief asks.
+      28  2. **Year groups** — every Year 1–6 pupil is scored as "on trac
+          k for KS2", assuming assessments are pitched at the pupil's yea
+          r group. `year_group` is kept on every row so the score is read
+           as a projection below Year 6. Year groups 11/14/15 are treated
+           as bad data.
+      29 -3. **Evidence window** — percentage correct across the academic
+         - year to date (1 Sept → as-of timestamp). Resets when year grou
+         -p changes. The data ends 16 Sep 2026, so the default `as_of_dat
+         -e` scores only one week of 2026/27 (26 pupils); run with `--var
+         -s 'as_of_date: 2026-07-21'` for the full 2025/26 year.         
+      29 +3. **Evidence window** — percentage correct across the academic
+         + year to date (1 Sept → as-of timestamp). Resets when year grou
+         +p changes: only evidence from the pupil's latest year group in 
+         +the window counts. 4 pupils change year group within 2025/26 (t
+         +hree Year 2 → 3, one Year 2 → 6), so their earlier answers are 
+         +dropped from scores dated after the change ([data quality #12](
+         +docs/data_quality.md)). The data ends 16 Sep 2026, so the defau
+         +lt `as_of_date` scores only one week of 2026/27 (26 pupils); ru
+         +n with `--vars 'as_of_date: 2026-07-21'` for the full 2025/26 y
+         +ear.                                                           
+      30  4. **Mapping** — [GOV.UK 2026 KS2 raw → scaled conversion table
+          s](https://www.gov.uk/government/publications/key-stage-2-tests
+          -2026-scaled-scores/2026-key-stage-2-scaled-score-conversion-ta
+          bles) (Reading, Maths) seeded in `seeds/ks2_scaled_score_conver
+          sion.csv`, the pupil's % correct is turned into an equivalent r
+          aw mark (% × the test's max marks: 50 Reading, 110 Maths), roun
+          ded half up to a whole mark, and looked up — so every score is 
+          an exact GOV.UK value, as a real pupil scoring whole marks woul
+          d get.
+      31  5. **Point-in-time** — one row per pupil, subject and `as_of_da
+          te` (dbt var; defaults to the latest answer date in the data, n
+          ever today). Each run replaces only that date's partition, so h
+          istory accumulates and any past date can be rebuilt exactly by 
+          re-running it. Chosen over a `valid_from` / `valid_to` history,
+           which is harder to keep correct incrementally when answers arr
+          ive late.
+      32  6. **Schema changes** — incremental models use `on_schema_chang
+          e: fail`, so a new column forces a deliberate `--full-refresh` 
+          instead of being silently dropped (`ignore`) or left null in ev
+          ery partition outside the lookback (`append_new_columns`), whic
+          h would mix old and new logic in one table.
+
+● Update(docs\data_quality.md)
+  ⎿  Added 1 line
+      32  | 9 | Pupils with no answers at all | 78 of 242 | Still get a r
+          ow per subject, `score_status = no_answers` |
+      33  | 10 | Answers span 2025-11-10 → 2026-09-16; 2026/27 has 1,747 
+          answers from 26 pupils (10–16 Sep) | — | Academic-year window; 
+          default `as_of_date` gives a thin score (README decision 3) |
+      34  | 11 | Complete sittings with answers on an earlier UK date tha
+          n they finished | 145 of 2,496 sittings, up to 47 days; 43 are 
+          scored, at most 19 days | Partition by sitting finish date; inc
+          remental runs read responses `max_sitting_days` (31) further ba
+          ck; a test fails if a scored sitting exceeds it |
+      35 +| 12 | Scored pupils whose year group changes within an academi
+         +c year | 4 pupils in 2025/26: three Year 2 → 3 (Feb → May), one
+         + Year 2 → 6 (Nov → Feb); no switching back | Score uses only th
+         +e latest year group in the window. Question for product: is `ye
+         +ar_group_at_sitting` the pupil's year or the assessment's level
+         +? |                                                            
+      36  
+      37  ## Checked and clean
+      38  
+
+● I've updated the docs:
+  - README decision 1: the 5 subjects with no KS2 test get rows with
+    no_sats_equivalent, so the table covers "every pupil, in every subject".
+  - README decision 3: says 4 pupils change year group within 2025/26 (three
+    Year 2 → 3, one Year 2 → 6). Their earlier answers are dropped from scores
+    dated after the change.
+  - Data quality row 12: the same facts, plus the open question for product: is
+    year_group_at_sitting the pupil's year or the assessment's level?
+
+  How the 7-subject choice changes the mart:
+  - Subject list: the subjects now come from the distinct subject_name in
+    stg_course_hierarchy, left-joined to the seed. That gives 242 × 7 = 1,694
+    rows per as_of_date. A new subject in the content appears automatically, as
+    no_sats_equivalent, until it's added to the seed.
+  - ks2_test is now nullable. It's null for the 5 subjects with no test.
+  - Statuses, in this order: no_sats_equivalent (no seed row) →
+    no_answers_in_window → scored.
+  - One new decision: counts on no_sats_equivalent rows. The intermediate models
+    only hold Reading and Maths answers, so a pupil's Science count would show
+    0 even if they answered 300 Science questions. That 0 would be false. My
+    advice: make n_questions, n_correct and n_not_attempted null on those rows,
+    meaning "not counted", and keep 0 for no_answers_in_window, meaning
+    "counted, none". The tests would check that.
+
+  Assumptions to add to the README this session (not yet in it):
+  1. A sitting counts from its UK finish date, so a sitting still open on
+     as_of_date adds nothing.
+  2. A scored sitting finishes within max_sitting_days (31) of its first answer,
+     and a test enforces it.
+  3. lookback_days = 3 is a judgement, because there's no load timestamp to
+     measure late data.
+  4. Corrections older than the lookback need a --full-refresh.
+  5. Duplicate copies count as skipped only if every copy was skipped.
+  6. Re-running a past as_of_date reflects the data as it is now, not as it was
+     known then.
+  7. Two wording fixes:
+     - The Layout table still says intermediate is "partitioned by answer date";
+       it's now by sitting finish date.
+     - The style rule is now an allow-list.
+
+  Confirm the null counts, and I'll write the mart. Your context is about 85%
+  full, so this is a good moment for /compact. Also commit what we have so far:
+  the intermediate models, the tests and the docs changes.
