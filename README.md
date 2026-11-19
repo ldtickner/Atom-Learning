@@ -126,13 +126,7 @@ Before trusting the model, I would test it on a past year group whose GCSE resul
 - **Ask why some sittings stay open for weeks.** 145 sittings have answers up to 47 days before they finish. This could be pupils pausing, or sittings never closed properly.
 - **Confirm the sitting types with the product team.** Should `entrance_exam` and `mock_session` count towards a score?
 - **Partition the raw `responses` table by answer date,** so incremental runs scan less data.
-<<<<<<< HEAD
-=======
 
- 
-
->>>>>>> 67e317c06624fe8d77e755065abeeab36e22230c
- 
 ## AI usage
  
 I used AI throughout, as the brief encourages:
