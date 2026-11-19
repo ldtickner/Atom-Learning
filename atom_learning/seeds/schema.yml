@@ -1,0 +1,39 @@
+version: 2
+
+seeds:
+  - name: ks2_scaled_score_conversion
+    description: >
+      GOV.UK 2026 KS2 raw score to scaled score conversion tables, one row per test and raw mark.
+      Also the source of truth for which subjects are scored: a subject is scored only if it has rows here.
+      Source: https://www.gov.uk/government/publications/key-stage-2-tests-2026-scaled-scores/2026-key-stage-2-scaled-score-conversion-tables
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [ks2_test, raw_score]
+    columns:
+      - name: test_year
+        description: Year of the KS2 tests the conversion table belongs to.
+        data_tests: [not_null]
+      - name: ks2_test
+        description: GOV.UK name of the KS2 test.
+        data_tests: [not_null]
+      - name: subject_name
+        description: Matching subject in course_hierarchy.subject_name.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [English, Maths]
+      - name: raw_score
+        description: Raw mark on the KS2 test.
+        data_tests: [not_null]
+      - name: max_raw_score
+        description: Highest raw mark available on the test.
+        data_tests: [not_null]
+      - name: scaled_score
+        description: KS2 scaled score for the raw mark. Null where GOV.UK gives no scaled score (lowest marks).
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 80
+                max_value: 120

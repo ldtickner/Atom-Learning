@@ -1,0 +1,130 @@
+version: 2
+
+models:
+  - name: stg_pupils
+    description: One row per pupil, cleaned from de_raw.pupils. Deleted pupils are kept and flagged, not filtered.
+    columns:
+      - name: pupil_id
+        description: Unique pupil identifier.
+        data_tests: [unique, not_null]
+      - name: is_deleted
+        description: True if the pupil is deleted. Null in the source is treated as false.
+        data_tests: [not_null]
+
+  - name: stg_assessment_sittings
+    description: >
+      One row per assessment sitting, cleaned from de_raw.assessment_sittings.
+      No rows are filtered; the rules for which sittings count towards a score live in the intermediate layer.
+    columns:
+      - name: session_id
+        description: Unique sitting identifier. Joins to stg_responses.session_id.
+        data_tests: [unique, not_null]
+      - name: pupil_id
+        description: Pupil who sat the assessment.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_pupils')
+                field: pupil_id
+      - name: assessment_id
+        description: Assessment that was sat.
+      - name: session_type
+        description: Purpose of the sitting, e.g. summative_assessment, entrance_exam, mock_session.
+        data_tests: [not_null]
+      - name: style
+        description: Question delivery style, e.g. fixed_question, survey, adaptive, non_adaptive.
+        data_tests: [not_null]
+      - name: year_group
+        description: Pupil's school year group at the time of the sitting (source column year_group_at_sitting).
+        data_tests: [not_null]
+      - name: total_questions
+        description: Number of questions in the sitting.
+      - name: is_complete
+        description: True if the pupil finished the sitting. Null in the source is treated as false.
+        data_tests: [not_null]
+      - name: is_deleted
+        description: True if the sitting is deleted. Null in the source is treated as false.
+        data_tests: [not_null]
+      - name: started_at
+        description: When the sitting started (UTC). Can be null for incomplete sittings.
+        data_tests:
+          - not_null:
+              config:
+                where: "is_complete"
+      - name: finished_at
+        description: When the sitting finished (UTC). Null for incomplete sittings.
+        data_tests:
+          - not_null:
+              config:
+                where: "is_complete"
+
+  - name: stg_course_hierarchy
+    description: >
+      One row per question, placing it in subject > topic > subtopic > atom. Cleaned from de_raw.course_hierarchy.
+      The full hierarchy is kept so topic-level questions can reuse this model.
+    columns:
+      - name: question_id
+        description: Unique question identifier. Joins to stg_responses.question_id.
+        data_tests: [unique, not_null]
+      - name: atom_id
+        description: Smallest unit of the hierarchy the question belongs to.
+        data_tests: [not_null]
+      - name: subtopic_id
+        description: Subtopic the atom belongs to.
+        data_tests: [not_null]
+      - name: topic_id
+        description: Topic the subtopic belongs to.
+        data_tests: [not_null]
+      - name: subject_id
+        description: Subject identifier. Maps one-to-one to subject_name.
+        data_tests: [not_null]
+      - name: subject_name
+        description: Subject name, e.g. English, Maths. Matches ks2_scaled_score_conversion.subject_name for scored subjects.
+        data_tests: [not_null]
+
+  - name: stg_responses
+    description: >
+      One row per answer to a question, cleaned from de_raw.responses. No rows are filtered or deduplicated;
+      duplicate answers and answers with no matching sitting are handled in the intermediate layer.
+      The source session_type is left out because it is always MOCK_TEST and contradicts assessment_sittings.
+    columns:
+      - name: response_id
+        description: Unique answer identifier.
+        data_tests: [unique, not_null]
+      - name: pupil_id
+        description: Pupil who answered.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_pupils')
+                field: pupil_id
+      - name: session_id
+        description: Sitting the answer belongs to. 1,433 answers have no matching sitting (see docs/data_quality.md).
+        data_tests: [not_null]
+      - name: question_id
+        description: Question answered.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_course_hierarchy')
+                field: question_id
+      - name: is_correct
+        description: True if the answer was correct.
+        data_tests: [not_null]
+      - name: is_no_attempt
+        description: True if the pupil did not attempt the question. Never also correct; counted as incorrect.
+        data_tests: [not_null]
+      - name: seconds_taken
+        description: Time spent on the question. Null on 25 rows; not used in scoring.
+      - name: question_number
+        description: Position of the question in the sitting.
+        data_tests: [not_null]
+      - name: answered_at
+        description: When the answer was given (UTC).
+        data_tests: [not_null]
+      - name: answered_date
+        description: Date of the answer in UK time (Europe/London). Used for partitioning and the point-in-time window.
+        data_tests: [not_null]
